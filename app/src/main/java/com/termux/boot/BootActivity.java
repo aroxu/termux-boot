@@ -1,5 +1,6 @@
 package com.termux.boot;
 
+import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Context;
@@ -12,6 +13,10 @@ import android.os.UserManager;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.text.TextUtils;
+import android.util.Log;
+import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.CheckBox;
@@ -29,12 +34,15 @@ import java.util.concurrent.Executors;
 
 public class BootActivity extends Activity {
 
+    private static final String TAG = "TermuxBFU";
+
     private CheckBox enableBfu;
     private CheckBox startNormalBoot;
     private TextView rootProbeStatus;
     private TextView rootfsProbeStatus;
     private Button rootAuthorizationButton;
     private TextView rootAuthorizationStatus;
+    private TextView operationLog;
     private TextView installStatus;
     private TextView installLog;
     private Handler liveLogHandler;
@@ -44,12 +52,14 @@ public class BootActivity extends Activity {
     private boolean activityResumed;
     private BfuRootAuthorization.Result pendingRootAuthorizationResult;
     private String pendingRootAuthorizationFailure;
+    private String lastDisplayedOperationLog = "";
     private String lastDisplayedInstallLog = "";
 
     private final Runnable refreshLiveLog = new Runnable() {
         @Override
         public void run() {
             refreshRootAuthorizationStatus();
+            refreshOperationLog();
             refreshInstallerStatus();
             liveLogHandler.postDelayed(this, 1_000L);
         }
@@ -87,7 +97,7 @@ public class BootActivity extends Activity {
     }
 
     private ScrollView buildSettingsView() {
-        int padding = (int) (20 * getResources().getDisplayMetrics().density);
+        int padding = dp(20);
         LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
         content.setPadding(padding, padding, padding, padding);
@@ -108,29 +118,42 @@ public class BootActivity extends Activity {
         rootAuthorizationExplanation.setText(R.string.bfu_root_authorization_explanation);
         content.addView(rootAuthorizationExplanation, matchWrap());
 
-        rootAuthorizationStatus = new TextView(this);
-        content.addView(rootAuthorizationStatus, matchWrap());
-
         rootAuthorizationButton = new Button(this);
         rootAuthorizationButton.setText(R.string.bfu_request_root_authorization);
         rootAuthorizationButton.setOnClickListener(view -> confirmRootAuthorization());
         content.addView(rootAuthorizationButton, matchWrap());
 
-        rootProbeStatus = new TextView(this);
-        content.addView(rootProbeStatus, matchWrap());
-
-        rootfsProbeStatus = new TextView(this);
-        content.addView(rootfsProbeStatus, matchWrap());
+        rootAuthorizationStatus = createLogConsole(3, 8);
+        addLogConsole(content, rootAuthorizationStatus, dp(12));
 
         Button refreshRootStatus = new Button(this);
         refreshRootStatus.setText(R.string.bfu_refresh_probe_status);
-        refreshRootStatus.setOnClickListener(view -> refreshProbeStatus());
+        refreshRootStatus.setOnClickListener(view -> refreshProbeStatus(true));
         content.addView(refreshRootStatus, matchWrap());
+
+        rootProbeStatus = createLogConsole(3, 8);
+        addLogConsole(content, rootProbeStatus, dp(8));
+
+        rootfsProbeStatus = createLogConsole(3, 8);
+        addLogConsole(content, rootfsProbeStatus, dp(12));
 
         Button save = new Button(this);
         save.setText(R.string.bfu_save_and_provision);
         save.setOnClickListener(view -> saveAndProvision());
         content.addView(save, matchWrap());
+
+        TextView operationLogTitle = new TextView(this);
+        operationLogTitle.setText(R.string.bfu_operation_log_title);
+        operationLogTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        content.addView(operationLogTitle, matchWrap());
+
+        TextView operationLogHint = new TextView(this);
+        operationLogHint.setText(R.string.bfu_log_console_hint);
+        operationLogHint.setTextSize(12f);
+        content.addView(operationLogHint, matchWrap());
+
+        operationLog = createLogConsole(7, 14);
+        addLogConsole(content, operationLog, padding);
 
         TextView installExplanation = new TextView(this);
         installExplanation.setText(R.string.bfu_debian_install_explanation);
@@ -141,8 +164,8 @@ public class BootActivity extends Activity {
         install.setOnClickListener(view -> confirmDebianInstall());
         content.addView(install, matchWrap());
 
-        installStatus = new TextView(this);
-        content.addView(installStatus, matchWrap());
+        installStatus = createLogConsole(3, 7);
+        addLogConsole(content, installStatus, dp(12));
 
         TextView installLogTitle = new TextView(this);
         installLogTitle.setText(R.string.bfu_debian_install_log_title);
@@ -150,42 +173,19 @@ public class BootActivity extends Activity {
         content.addView(installLogTitle, matchWrap());
 
         TextView installLogHint = new TextView(this);
-        installLogHint.setText(R.string.bfu_debian_install_log_hint);
+        installLogHint.setText(R.string.bfu_log_console_hint);
         installLogHint.setTextSize(12f);
         content.addView(installLogHint, matchWrap());
 
-        installLog = new TextView(this);
-        installLog.setTypeface(Typeface.MONOSPACE);
-        installLog.setTextSize(12f);
-        installLog.setTextColor(Color.rgb(222, 231, 240));
-        installLog.setHighlightColor(Color.rgb(55, 96, 145));
-        installLog.setLineSpacing(0f, 1.15f);
-        installLog.setMinLines(12);
-        installLog.setMaxLines(22);
-        // Some Android 16 vendor frameworks crash while drawing a forced,
-        // non-fading scrollbar before its ScrollBarDrawable is initialized.
-        // Text selection still supplies a scrolling movement method, so avoid
-        // the native scrollbar rendering path entirely.
-        installLog.setVerticalScrollBarEnabled(false);
-        installLog.setTextIsSelectable(true);
-        int logPadding = (int) (12 * getResources().getDisplayMetrics().density);
-        installLog.setPadding(logPadding, logPadding, logPadding, logPadding);
-        GradientDrawable logBackground = new GradientDrawable();
-        logBackground.setColor(Color.rgb(13, 18, 23));
-        logBackground.setCornerRadius(10 * getResources().getDisplayMetrics().density);
-        logBackground.setStroke(
-                Math.max(1, (int) getResources().getDisplayMetrics().density),
-                Color.rgb(59, 72, 84));
-        installLog.setBackground(logBackground);
-        LinearLayout.LayoutParams logLayout = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT);
-        int logMargin = (int) (8 * getResources().getDisplayMetrics().density);
-        logLayout.topMargin = logMargin;
-        logLayout.bottomMargin = padding;
-        content.addView(installLog, logLayout);
+        installLog = createLogConsole(12, 22);
+        addLogConsole(content, installLog, padding);
 
         ScrollView scrollView = new ScrollView(this);
+        scrollView.setFillViewport(true);
+        scrollView.setSmoothScrollingEnabled(true);
+        // Avoid the same Android 16 vendor ScrollBarDrawable crash that affects
+        // the consoles. Scrolling remains available by touch and keyboard.
+        scrollView.setVerticalScrollBarEnabled(false);
         scrollView.addView(content);
         return scrollView;
     }
@@ -194,37 +194,51 @@ public class BootActivity extends Activity {
         enableBfu.setChecked(BfuPreferences.isEnabled(this));
         startNormalBoot.setChecked(BfuPreferences.shouldStartNormalBoot(this));
         refreshRootAuthorizationStatus();
-        refreshProbeStatus();
+        refreshProbeStatus(false);
+        refreshOperationLog();
         refreshInstallerStatus();
     }
 
-    private void refreshProbeStatus() {
+    private void refreshProbeStatus(boolean recordOperation) {
+        String rootResult;
         try {
-            String result = BfuRootProbe.readLastPersistentResult(this);
-            if (result.isEmpty()) result = getString(R.string.bfu_root_probe_none);
-            rootProbeStatus.setText(getString(R.string.bfu_root_probe_status, result));
+            rootResult = BfuRootProbe.readLastPersistentResult(this);
+            if (rootResult.isEmpty()) rootResult = getString(R.string.bfu_root_probe_none);
+            replaceConsoleText(rootProbeStatus,
+                    getString(R.string.bfu_root_probe_status, rootResult), false);
         } catch (IOException e) {
-            rootProbeStatus.setText(getString(R.string.bfu_root_probe_read_failed,
-                    e.getMessage()));
+            rootResult = getString(R.string.bfu_root_probe_read_failed, e.getMessage());
+            replaceConsoleText(rootProbeStatus, rootResult, false);
         }
 
+        String rootfsResult;
         try {
-            String result = BfuRootfsProbe.readLastPersistentResult(this);
-            if (result.isEmpty()) result = getString(R.string.bfu_rootfs_probe_none);
-            rootfsProbeStatus.setText(getString(R.string.bfu_rootfs_probe_status, result));
+            rootfsResult = BfuRootfsProbe.readLastPersistentResult(this);
+            if (rootfsResult.isEmpty()) rootfsResult = getString(R.string.bfu_rootfs_probe_none);
+            replaceConsoleText(rootfsProbeStatus,
+                    getString(R.string.bfu_rootfs_probe_status, rootfsResult), false);
         } catch (IOException e) {
-            rootfsProbeStatus.setText(getString(R.string.bfu_rootfs_probe_read_failed,
-                    e.getMessage()));
+            rootfsResult = getString(R.string.bfu_rootfs_probe_read_failed, e.getMessage());
+            replaceConsoleText(rootfsProbeStatus, rootfsResult, false);
+        }
+
+        if (recordOperation) {
+            recordOperation("PROBE_RESULTS_REFRESHED root={" + oneLine(rootResult)
+                    + "} rootfs={" + oneLine(rootfsResult) + "}");
         }
     }
 
     private void saveAndProvision() {
+        recordOperation("PROVISION_STARTED enable_bfu=" + enableBfu.isChecked()
+                + " normal_boot_after_unlock=" + startNormalBoot.isChecked());
         try {
             BfuPreferences.save(this, enableBfu.isChecked(), startNormalBoot.isChecked());
             BfuRuntime.Layout layout = BfuRuntime.provision(this);
+            recordOperation("PROVISION_SUCCEEDED runtime=" + layout.root);
             Toast.makeText(this, getString(R.string.bfu_saved, layout.root),
                     Toast.LENGTH_LONG).show();
         } catch (IOException | IllegalStateException e) {
+            recordOperation("PROVISION_FAILED " + BfuSu.sanitize(e.getMessage()));
             Toast.makeText(this, getString(R.string.bfu_provision_failed, e.getMessage()),
                     Toast.LENGTH_LONG).show();
         }
@@ -232,6 +246,7 @@ public class BootActivity extends Activity {
 
     private void confirmRootAuthorization() {
         if (!isUserUnlocked()) {
+            recordOperation("ROOT_AUTHORIZATION_REJECTED user_locked=true");
             Toast.makeText(this, R.string.bfu_root_authorization_requires_unlock,
                     Toast.LENGTH_LONG).show();
             return;
@@ -253,7 +268,9 @@ public class BootActivity extends Activity {
         if (rootAuthorizationInProgress) return;
         rootAuthorizationInProgress = true;
         rootAuthorizationButton.setEnabled(false);
-        rootAuthorizationStatus.setText(R.string.bfu_root_authorization_waiting);
+        replaceConsoleText(rootAuthorizationStatus,
+                getString(R.string.bfu_root_authorization_waiting), true);
+        recordOperation("ROOT_AUTHORIZATION_STARTED shared_uid=" + Process.myUid());
         Context applicationContext = getApplicationContext();
 
         rootAuthorizationExecutor.execute(() -> {
@@ -284,6 +301,14 @@ public class BootActivity extends Activity {
 
         pendingRootAuthorizationResult = result;
         pendingRootAuthorizationFailure = failure;
+        if (result != null) {
+            recordOperation((result.authorizedWhileUnlocked()
+                    ? "ROOT_AUTHORIZATION_SUCCEEDED " : "ROOT_AUTHORIZATION_FAILED ")
+                    + result.summary());
+        } else {
+            recordOperation("ROOT_AUTHORIZATION_FAILED "
+                    + (failure == null ? "unknown failure" : failure));
+        }
         if (activityResumed) showPendingRootAuthorizationResult();
     }
 
@@ -319,11 +344,11 @@ public class BootActivity extends Activity {
         try {
             String result = BfuRootAuthorization.readLastPersistentResult(this);
             if (result.isEmpty()) result = getString(R.string.bfu_root_authorization_none);
-            rootAuthorizationStatus.setText(getString(
-                    R.string.bfu_root_authorization_status, result));
+            replaceConsoleText(rootAuthorizationStatus, getString(
+                    R.string.bfu_root_authorization_status, result), true);
         } catch (IOException e) {
-            rootAuthorizationStatus.setText(getString(
-                    R.string.bfu_root_authorization_read_failed, e.getMessage()));
+            replaceConsoleText(rootAuthorizationStatus, getString(
+                    R.string.bfu_root_authorization_read_failed, e.getMessage()), true);
         }
     }
 
@@ -341,11 +366,13 @@ public class BootActivity extends Activity {
 
     private void confirmDebianInstall() {
         if (!enableBfu.isChecked()) {
+            recordOperation("DEBIAN_INSTALL_REJECTED bfu_disabled=true");
             Toast.makeText(this, R.string.bfu_install_requires_enabled,
                     Toast.LENGTH_LONG).show();
             return;
         }
         if (!isUserUnlocked()) {
+            recordOperation("DEBIAN_INSTALL_REJECTED user_locked=true");
             Toast.makeText(this, R.string.bfu_install_requires_unlock,
                     Toast.LENGTH_LONG).show();
             return;
@@ -365,10 +392,12 @@ public class BootActivity extends Activity {
             BfuPreferences.save(this, enableBfu.isChecked(), startNormalBoot.isChecked());
             BfuRuntime.provision(this);
             BfuBootService.requestDebianRootfsInstall(this);
+            recordOperation("DEBIAN_INSTALL_REQUESTED suite=trixie architecture=arm64");
             Toast.makeText(this, R.string.bfu_install_requested,
                     Toast.LENGTH_LONG).show();
             refreshInstallerStatus();
         } catch (IOException | IllegalStateException e) {
+            recordOperation("DEBIAN_INSTALL_REQUEST_FAILED " + BfuSu.sanitize(e.getMessage()));
             Toast.makeText(this, getString(R.string.bfu_provision_failed, e.getMessage()),
                     Toast.LENGTH_LONG).show();
         }
@@ -377,54 +406,185 @@ public class BootActivity extends Activity {
     private void refreshInstallerStatus() {
         if (installStatus == null || installLog == null) return;
 
-        String status;
         try {
-            status = DebianRootfsInstaller.readStatus(this);
+            String status = DebianRootfsInstaller.readStatus(this);
             if (status.isEmpty()) status = getString(R.string.bfu_debian_install_status_none);
-            installStatus.setText(getString(R.string.bfu_debian_install_status, status));
+            replaceConsoleText(installStatus,
+                    getString(R.string.bfu_debian_install_status, status), true);
         } catch (IOException e) {
-            status = "";
-            installStatus.setText(getString(R.string.bfu_debian_install_status_failed,
-                    e.getMessage()));
+            replaceConsoleText(installStatus,
+                    getString(R.string.bfu_debian_install_status_failed, e.getMessage()),
+                    true);
         }
 
         try {
             String log = DebianRootfsInstaller.readLogTail(this);
             if (log.isEmpty()) log = getString(R.string.bfu_debian_install_log_none);
             if (!log.equals(lastDisplayedInstallLog)) {
-                if (hasInstallLogSelection() || !isInstallLogAtBottom()) return;
+                if (hasConsoleSelection(installLog)
+                        || !isConsoleAtBottom(installLog, lastDisplayedInstallLog)) return;
                 lastDisplayedInstallLog = log;
                 installLog.setText(log);
-                scrollInstallLogToBottom();
+                scrollConsoleToBottom(installLog);
             }
         } catch (IOException e) {
-            installLog.setText(getString(R.string.bfu_debian_install_log_failed,
-                    e.getMessage()));
+            replaceConsoleText(installLog,
+                    getString(R.string.bfu_debian_install_log_failed, e.getMessage()), true);
         }
     }
 
-    private void scrollInstallLogToBottom() {
-        installLog.post(() -> {
-            if (installLog.getLayout() == null) return;
-            int scroll = installLog.getLayout().getLineTop(installLog.getLineCount())
-                    - installLog.getHeight();
-            installLog.scrollTo(0, Math.max(0, scroll));
+    private void refreshOperationLog() {
+        if (operationLog == null) return;
+        try {
+            String log = BfuOperationLog.readTail(this);
+            if (log.isEmpty()) log = getString(R.string.bfu_operation_log_none);
+            if (!log.equals(lastDisplayedOperationLog)) {
+                if (hasConsoleSelection(operationLog)
+                        || !isConsoleAtBottom(operationLog, lastDisplayedOperationLog)) return;
+                lastDisplayedOperationLog = log;
+                operationLog.setText(log);
+                scrollConsoleToBottom(operationLog);
+            }
+        } catch (IOException e) {
+            replaceConsoleText(operationLog,
+                    getString(R.string.bfu_operation_log_failed, e.getMessage()), true);
+        }
+    }
+
+    private void recordOperation(String message) {
+        try {
+            BfuOperationLog.append(this, message);
+            refreshOperationLog();
+        } catch (IOException e) {
+            Log.e(TAG, "Failed to append BFU UI operation log", e);
+            replaceConsoleText(operationLog,
+                    getString(R.string.bfu_operation_log_failed, e.getMessage()), true);
+        }
+    }
+
+    private void replaceConsoleText(TextView console, String value, boolean followBottom) {
+        if (console == null || TextUtils.equals(console.getText(), value)
+                || hasConsoleSelection(console)) return;
+        boolean wasAtBottom = isConsoleAtBottom(console, console.getText().toString());
+        console.setText(value);
+        if (followBottom && wasAtBottom) {
+            scrollConsoleToBottom(console);
+        } else {
+            console.scrollTo(0, 0);
+        }
+    }
+
+    private void scrollConsoleToBottom(TextView console) {
+        console.post(() -> {
+            if (console.getLayout() == null) return;
+            int scroll = console.getLayout().getLineTop(console.getLineCount())
+                    - console.getHeight() + console.getPaddingBottom();
+            console.scrollTo(0, Math.max(0, scroll));
         });
     }
 
-    private boolean hasInstallLogSelection() {
-        int start = installLog.getSelectionStart();
-        int end = installLog.getSelectionEnd();
+    private static boolean hasConsoleSelection(TextView console) {
+        int start = console.getSelectionStart();
+        int end = console.getSelectionEnd();
         return start >= 0 && end >= 0 && start != end;
     }
 
-    private boolean isInstallLogAtBottom() {
-        if (lastDisplayedInstallLog.isEmpty() || installLog.getLayout() == null) return true;
-        int contentBottom = installLog.getLayout().getLineTop(installLog.getLineCount());
-        int visibleBottom = installLog.getScrollY() + installLog.getHeight()
-                - installLog.getPaddingBottom();
-        int tolerance = (int) (24 * getResources().getDisplayMetrics().density);
+    private boolean isConsoleAtBottom(TextView console, String displayedValue) {
+        if (displayedValue.isEmpty() || console.getLayout() == null) return true;
+        int contentBottom = console.getLayout().getLineTop(console.getLineCount());
+        int visibleBottom = console.getScrollY() + console.getHeight()
+                - console.getPaddingBottom();
+        int tolerance = dp(24);
         return visibleBottom >= contentBottom - tolerance;
+    }
+
+    private static String oneLine(String value) {
+        if (value == null) return "(null)";
+        return value.replace('\r', ' ').replace('\n', ' ').trim();
+    }
+
+    private TextView createLogConsole(int minimumLines, int maximumLines) {
+        TextView console = new ConsoleTextView(this);
+        console.setTypeface(Typeface.MONOSPACE);
+        console.setTextSize(12f);
+        console.setTextColor(Color.rgb(222, 231, 240));
+        console.setHighlightColor(Color.rgb(55, 96, 145));
+        console.setGravity(Gravity.TOP | Gravity.START);
+        console.setLineSpacing(0f, 1.15f);
+        console.setMinLines(minimumLines);
+        console.setMaxLines(maximumLines);
+        console.setHorizontallyScrolling(false);
+        // Some Android 16 vendor frameworks crash while drawing a forced,
+        // non-fading scrollbar before its ScrollBarDrawable is initialized.
+        // Selection's movement method still provides touch scrolling.
+        console.setVerticalScrollBarEnabled(false);
+        console.setTextIsSelectable(true);
+        console.setPadding(dp(12), dp(12), dp(12), dp(12));
+
+        GradientDrawable background = new GradientDrawable();
+        background.setColor(Color.rgb(13, 18, 23));
+        background.setCornerRadius(dp(10));
+        background.setStroke(Math.max(1, dp(1)), Color.rgb(59, 72, 84));
+        console.setBackground(background);
+        return console;
+    }
+
+    private void addLogConsole(LinearLayout parent, TextView console, int bottomMargin) {
+        LinearLayout.LayoutParams layout = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        layout.topMargin = dp(8);
+        layout.bottomMargin = bottomMargin;
+        parent.addView(console, layout);
+    }
+
+    private int dp(int value) {
+        return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
+    }
+
+    /** Lets a console consume drags while it can scroll, then hands edge drags to the page. */
+    private static final class ConsoleTextView extends TextView {
+        private float previousY;
+
+        ConsoleTextView(Context context) {
+            super(context);
+        }
+
+        @Override
+        public boolean performClick() {
+            return super.performClick();
+        }
+
+        // TextView's implementation handles click accessibility, long-press
+        // selection, and movement after the interception policy above runs.
+        @SuppressLint("ClickableViewAccessibility")
+        @Override
+        public boolean onTouchEvent(MotionEvent event) {
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    previousY = event.getY();
+                    getParent().requestDisallowInterceptTouchEvent(true);
+                    break;
+                case MotionEvent.ACTION_MOVE:
+                    float currentY = event.getY();
+                    float delta = currentY - previousY;
+                    if (Math.abs(delta) >= 1f) {
+                        int direction = delta < 0f ? 1 : -1;
+                        boolean keepInConsole = hasConsoleSelection(this)
+                                || canScrollVertically(direction);
+                        getParent().requestDisallowInterceptTouchEvent(keepInConsole);
+                    }
+                    previousY = currentY;
+                    break;
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    getParent().requestDisallowInterceptTouchEvent(false);
+                    break;
+                default:
+                    break;
+            }
+            return super.onTouchEvent(event);
+        }
     }
 
     private boolean isUserUnlocked() {
