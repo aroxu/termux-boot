@@ -148,12 +148,23 @@ public class BfuBootService extends Service {
                 Log.i(TAG, "Debian rootfs accessible; " + rootfsResult.summary());
             } else {
                 Log.w(TAG, "Debian rootfs probe failed; " + rootfsResult.summary());
+                return;
+            }
+
+            BfuDebianRuntimeProbe.Result runtimeResult =
+                    BfuDebianRuntimeProbe.run(this, layout);
+            if (runtimeResult.succeededDuringBfu()) {
+                Log.i(TAG, "Debian namespace/chroot probe succeeded; "
+                        + runtimeResult.summary());
+            } else {
+                Log.w(TAG, "Debian namespace/chroot probe failed; "
+                        + runtimeResult.summary());
             }
         } catch (IOException e) {
-            Log.e(TAG, "Root/rootfs probe or DE log write failed", e);
+            Log.e(TAG, "Root/rootfs/runtime probe or DE log write failed", e);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            Log.w(TAG, "Root or rootfs probe interrupted");
+            Log.w(TAG, "Root, rootfs, or runtime probe interrupted");
         }
     }
 

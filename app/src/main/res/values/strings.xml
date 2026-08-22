@@ -1,7 +1,7 @@
 <resources>
     <string name="app_name">Termux:Boot</string>
     <string name="bfu_settings_title">Termux:Boot Direct Boot</string>
-    <string name="bfu_settings_explanation">BFU mode uses device-protected storage before the first unlock. Magisk root is verified; the current milestone probes /data/local/debian storage access for a future systemd launcher. Never place passwords, tokens, or other credentials in BFU storage.</string>
+    <string name="bfu_settings_explanation">BFU mode uses device-protected storage before the first unlock. After root and /data/local/debian checks pass, the current milestone creates private namespaces and proves that Debian /bin/sh runs as PID 1 in chroot. Never place passwords, tokens, or other credentials in BFU storage.</string>
     <string name="bfu_enable">Enable Direct Boot Debian bootstrap</string>
     <string name="bfu_start_normal_boot">Start normal Termux:Boot after unlock</string>
     <string name="bfu_root_authorization_explanation">Debian boot requires Magisk root on every cold boot. Authorize this shared UID while Android is unlocked, and choose Magisk’s permanent/forever option so no approval UI is needed during BFU.</string>
@@ -27,6 +27,9 @@
     <string name="bfu_rootfs_probe_status">Last BFU Debian rootfs probe:\n%1$s</string>
     <string name="bfu_rootfs_probe_none">No rootfs probe has been recorded yet.</string>
     <string name="bfu_rootfs_probe_read_failed">Failed to read BFU rootfs result: %1$s</string>
+    <string name="bfu_debian_runtime_probe_status">Last BFU Debian namespace/chroot probe:\n%1$s</string>
+    <string name="bfu_debian_runtime_probe_none">No namespace/chroot probe has been recorded yet. It runs automatically during the next locked boot after the rootfs gate passes.</string>
+    <string name="bfu_debian_runtime_probe_read_failed">Failed to read BFU namespace/chroot result: %1$s</string>
     <string name="bfu_save_and_provision">Save and provision BFU runtime</string>
     <string name="bfu_saved">BFU settings saved. Runtime: %1$s</string>
     <string name="bfu_provision_failed">BFU provisioning failed: %1$s</string>

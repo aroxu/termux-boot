@@ -1,6 +1,7 @@
 package com.termux.boot;
 
 import android.content.Context;
+import android.os.Build;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -9,9 +10,14 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.Map;
 
 final class BfuRuntime {
+
+    private static final String NAMESPACE_PROBE_SHA256 =
+            "bcec89cb70ee9b3847260788e04548e497d830e8a56388b07c275606a7dc5ea8";
 
     private static final String TEST_SCRIPT =
             "#!/system/bin/sh\n" +
@@ -30,6 +36,7 @@ final class BfuRuntime {
         final File downloads;
         final File testScript;
         final File rootfsProbeScript;
+        final File namespaceProbeBinary;
         final File rootfsInstallerScript;
         final File debootstrapArchive;
         final File archiveKeyringPackage;
@@ -45,6 +52,7 @@ final class BfuRuntime {
             downloads = new File(root, "downloads");
             testScript = new File(scripts, "test.sh");
             rootfsProbeScript = new File(scripts, "probe-rootfs.sh");
+            namespaceProbeBinary = new File(bin, "bfu-namespace-probe-arm64");
             rootfsInstallerScript = new File(scripts, "install-debian-rootfs.sh");
             debootstrapArchive = new File(downloads, "debootstrap_1.0.141.tar.gz");
             archiveKeyringPackage = new File(downloads,
@@ -68,6 +76,10 @@ final class BfuRuntime {
 
         writePrivateFile(layout.testScript, TEST_SCRIPT, true);
         copyPrivateAsset(deContext, "bfu/probe-rootfs.sh", layout.rootfsProbeScript, true);
+        requireArm64();
+        copyPrivateAsset(deContext, "bfu/bin/bfu-namespace-probe-arm64",
+                layout.namespaceProbeBinary, true);
+        verifySha256(layout.namespaceProbeBinary, NAMESPACE_PROBE_SHA256);
         copyPrivateAsset(deContext, "bfu/install-debian-rootfs.sh",
                 layout.rootfsInstallerScript, true);
         return layout;
@@ -142,6 +154,39 @@ final class BfuRuntime {
             throw new IOException("Failed to install " + file);
         }
         setPrivateMode(file, executable);
+    }
+
+    private static void requireArm64() throws IOException {
+        for (String abi : Build.SUPPORTED_ABIS) {
+            if ("arm64-v8a".equals(abi)) return;
+        }
+        throw new IOException("BFU namespace helper currently supports only arm64-v8a");
+    }
+
+    private static void verifySha256(File file, String expected) throws IOException {
+        final MessageDigest digest;
+        try {
+            digest = MessageDigest.getInstance("SHA-256");
+        } catch (NoSuchAlgorithmException e) {
+            throw new IOException("SHA-256 is unavailable", e);
+        }
+
+        try (InputStream input = new java.io.FileInputStream(file)) {
+            byte[] buffer = new byte[8_192];
+            int count;
+            while ((count = input.read(buffer)) >= 0) digest.update(buffer, 0, count);
+        }
+
+        StringBuilder actual = new StringBuilder(64);
+        for (byte value : digest.digest()) {
+            actual.append(String.format(java.util.Locale.US, "%02x", value & 0xff));
+        }
+        if (!expected.equals(actual.toString())) {
+            // Never leave an unverified root helper executable in the DE runtime.
+            //noinspection ResultOfMethodCallIgnored
+            file.delete();
+            throw new IOException("BFU namespace helper SHA-256 mismatch");
+        }
     }
 
     @SuppressWarnings("ResultOfMethodCallIgnored")

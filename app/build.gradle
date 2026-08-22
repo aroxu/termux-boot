@@ -63,6 +63,31 @@ task versionName {
     }
 }
 
+def bfuNamespaceProbeAsset = file(
+        'src/main/assets/bfu/bin/bfu-namespace-probe-arm64')
+def bfuNamespaceProbeSha256 =
+        'bcec89cb70ee9b3847260788e04548e497d830e8a56388b07c275606a7dc5ea8'
+
+tasks.register('verifyBfuNamespaceProbe') {
+    inputs.file(bfuNamespaceProbeAsset)
+    doLast {
+        if (!bfuNamespaceProbeAsset.isFile()) {
+            throw new GradleException('Missing ARM64 BFU namespace probe asset')
+        }
+        def digest = java.security.MessageDigest.getInstance('SHA-256')
+                .digest(bfuNamespaceProbeAsset.bytes)
+        def actual = digest.collect { String.format('%02x', it & 0xff) }.join()
+        if (actual != bfuNamespaceProbeSha256) {
+            throw new GradleException(
+                    "BFU namespace probe SHA-256 mismatch: ${actual}")
+        }
+    }
+}
+
+tasks.named('preBuild').configure {
+    dependsOn tasks.named('verifyBfuNamespaceProbe')
+}
+
 def validateVersionName(String versionName) {
     // https://semver.org/spec/v2.0.0.html#is-there-a-suggested-regular-expression-regex-to-check-a-semver-string
     // ^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$

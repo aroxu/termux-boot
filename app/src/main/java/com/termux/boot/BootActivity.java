@@ -40,6 +40,7 @@ public class BootActivity extends Activity {
     private CheckBox startNormalBoot;
     private TextView rootProbeStatus;
     private TextView rootfsProbeStatus;
+    private TextView debianRuntimeProbeStatus;
     private Button rootAuthorizationButton;
     private TextView rootAuthorizationStatus;
     private TextView operationLog;
@@ -135,7 +136,10 @@ public class BootActivity extends Activity {
         addLogConsole(content, rootProbeStatus, dp(8));
 
         rootfsProbeStatus = createLogConsole(3, 8);
-        addLogConsole(content, rootfsProbeStatus, dp(12));
+        addLogConsole(content, rootfsProbeStatus, dp(8));
+
+        debianRuntimeProbeStatus = createLogConsole(4, 10);
+        addLogConsole(content, debianRuntimeProbeStatus, dp(12));
 
         Button save = new Button(this);
         save.setText(R.string.bfu_save_and_provision);
@@ -222,9 +226,24 @@ public class BootActivity extends Activity {
             replaceConsoleText(rootfsProbeStatus, rootfsResult, false);
         }
 
+        String runtimeResult;
+        try {
+            runtimeResult = BfuDebianRuntimeProbe.readLastPersistentResult(this);
+            if (runtimeResult.isEmpty()) {
+                runtimeResult = getString(R.string.bfu_debian_runtime_probe_none);
+            }
+            replaceConsoleText(debianRuntimeProbeStatus,
+                    getString(R.string.bfu_debian_runtime_probe_status, runtimeResult), false);
+        } catch (IOException e) {
+            runtimeResult = getString(
+                    R.string.bfu_debian_runtime_probe_read_failed, e.getMessage());
+            replaceConsoleText(debianRuntimeProbeStatus, runtimeResult, false);
+        }
+
         if (recordOperation) {
             recordOperation("PROBE_RESULTS_REFRESHED root={" + oneLine(rootResult)
-                    + "} rootfs={" + oneLine(rootfsResult) + "}");
+                    + "} rootfs={" + oneLine(rootfsResult)
+                    + "} runtime={" + oneLine(runtimeResult) + "}");
         }
     }
 
