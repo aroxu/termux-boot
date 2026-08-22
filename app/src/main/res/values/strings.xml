@@ -4,6 +4,10 @@
     <string name="bfu_settings_explanation">BFU mode uses device-protected storage before the first unlock. The current milestone probes pre-authorized Magisk root for a future Debian systemd launcher. Never place passwords, tokens, or other credentials in BFU storage.</string>
     <string name="bfu_enable">Enable Direct Boot Debian bootstrap</string>
     <string name="bfu_start_normal_boot">Start normal Termux:Boot after unlock</string>
+    <string name="bfu_refresh_root_status">Refresh last BFU root result</string>
+    <string name="bfu_root_probe_status">Last BFU root probe:\n%1$s</string>
+    <string name="bfu_root_probe_none">No root probe has been recorded yet.</string>
+    <string name="bfu_root_probe_read_failed">Failed to read BFU root result: %1$s</string>
     <string name="bfu_save_and_provision">Save and provision BFU runtime</string>
     <string name="bfu_saved">BFU settings saved. Runtime: %1$s</string>
     <string name="bfu_provision_failed">BFU provisioning failed: %1$s</string>

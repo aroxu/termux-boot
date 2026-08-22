@@ -5,11 +5,14 @@ import android.os.Build;
 import android.os.SystemClock;
 import android.os.UserManager;
 
+import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 
 final class BfuRootProbe {
@@ -70,6 +73,22 @@ final class BfuRootProbe {
                 userUnlockedAfter, commandResult.output);
         appendPersistentResult(deContext, result);
         return result;
+    }
+
+    static String readLastPersistentResult(Context context) throws IOException {
+        Context deContext = BfuPreferences.deviceProtectedContext(context);
+        File log = new File(deContext.getFilesDir(), "bfu-root.log");
+        if (!log.isFile()) return "";
+
+        String lastLine = "";
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(
+                new FileInputStream(log), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (!line.trim().isEmpty()) lastLine = line;
+            }
+        }
+        return lastLine;
     }
 
     private static Result findAndRunSu() throws InterruptedException {

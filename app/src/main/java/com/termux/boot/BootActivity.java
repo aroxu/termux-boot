@@ -18,6 +18,7 @@ public class BootActivity extends Activity {
 
     private CheckBox enableBfu;
     private CheckBox startNormalBoot;
+    private TextView rootProbeStatus;
 
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
@@ -45,6 +46,14 @@ public class BootActivity extends Activity {
         startNormalBoot.setText(R.string.bfu_start_normal_boot);
         content.addView(startNormalBoot, matchWrap());
 
+        rootProbeStatus = new TextView(this);
+        content.addView(rootProbeStatus, matchWrap());
+
+        Button refreshRootStatus = new Button(this);
+        refreshRootStatus.setText(R.string.bfu_refresh_root_status);
+        refreshRootStatus.setOnClickListener(view -> refreshRootProbeStatus());
+        content.addView(refreshRootStatus, matchWrap());
+
         Button save = new Button(this);
         save.setText(R.string.bfu_save_and_provision);
         save.setOnClickListener(view -> saveAndProvision());
@@ -58,6 +67,18 @@ public class BootActivity extends Activity {
     private void loadSettings() {
         enableBfu.setChecked(BfuPreferences.isEnabled(this));
         startNormalBoot.setChecked(BfuPreferences.shouldStartNormalBoot(this));
+        refreshRootProbeStatus();
+    }
+
+    private void refreshRootProbeStatus() {
+        try {
+            String result = BfuRootProbe.readLastPersistentResult(this);
+            if (result.isEmpty()) result = getString(R.string.bfu_root_probe_none);
+            rootProbeStatus.setText(getString(R.string.bfu_root_probe_status, result));
+        } catch (IOException e) {
+            rootProbeStatus.setText(getString(R.string.bfu_root_probe_read_failed,
+                    e.getMessage()));
+        }
     }
 
     private void saveAndProvision() {
