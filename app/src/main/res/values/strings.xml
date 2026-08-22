@@ -30,7 +30,7 @@
     <string name="bfu_save_and_provision">Save and provision BFU runtime</string>
     <string name="bfu_saved">BFU settings saved. Runtime: %1$s</string>
     <string name="bfu_provision_failed">BFU provisioning failed: %1$s</string>
-    <string name="bfu_debian_install_explanation">Rootfs installation runs only after unlock. In Termux, first run: pkg install debootstrap util-linux. The app downloads pinned official Debian artifacts, verifies SHA-256, and builds a staging tree before publishing /data/local/debian.</string>
+    <string name="bfu_debian_install_explanation">Rootfs installation runs only after unlock. In Termux, first run: pkg install debootstrap util-linux mount-utils. The app downloads pinned official Debian artifacts, verifies SHA-256, and builds a staging tree before publishing /data/local/debian.</string>
     <string name="bfu_install_debian">Install Debian 13 Trixie arm64 rootfs</string>
     <string name="bfu_install_requires_enabled">Enable Direct Boot Debian bootstrap before installing.</string>
     <string name="bfu_install_requires_unlock">Unlock Android before installing the Debian rootfs.</string>
@@ -42,6 +42,7 @@
     <string name="bfu_debian_install_status_none">No Debian installation has been requested yet.</string>
     <string name="bfu_debian_install_status_failed">Failed to read installer status: %1$s</string>
     <string name="bfu_debian_install_log_title">Debian installation log (live, newest 48 KiB):</string>
+    <string name="bfu_debian_install_log_hint">Long-press the console to select and copy. Live follow pauses while text is selected or scrolled up.</string>
     <string name="bfu_debian_install_log_none">No installation log yet.</string>
     <string name="bfu_debian_install_log_failed">Failed to read installation log: %1$s</string>
     <string name="bfu_notification_channel">Termux BFU service</string>

@@ -76,18 +76,25 @@ final class DebianRootfsInstaller {
             process = started.process;
             log.line("Magisk command accepted by " + started.command);
 
+            String childError = null;
             try (BufferedReader reader = new BufferedReader(new InputStreamReader(
                     process.getInputStream(), StandardCharsets.UTF_8))) {
                 String line;
                 while ((line = reader.readLine()) != null) {
-                    log.line("root: " + sanitizeChildLine(line));
+                    String sanitized = sanitizeChildLine(line);
+                    log.line("root: " + sanitized);
+                    if (sanitized.startsWith("ERROR:")) childError = sanitized;
                 }
             }
 
             int exitCode = process.waitFor();
             process = null;
             if (exitCode != 0) {
-                throw new IOException("root installer exited with status " + exitCode);
+                String reason = "root installer exited with status " + exitCode;
+                if (childError != null && !childError.isEmpty()) {
+                    reason += ": " + childError;
+                }
+                throw new IOException(reason);
             }
 
             log.line("Debian rootfs installation completed successfully");

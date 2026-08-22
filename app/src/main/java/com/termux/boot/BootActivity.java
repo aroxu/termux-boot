@@ -9,8 +9,9 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.Process;
 import android.os.UserManager;
+import android.graphics.Color;
 import android.graphics.Typeface;
-import android.text.method.ScrollingMovementMethod;
+import android.graphics.drawable.GradientDrawable;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.CheckBox;
@@ -145,18 +146,41 @@ public class BootActivity extends Activity {
 
         TextView installLogTitle = new TextView(this);
         installLogTitle.setText(R.string.bfu_debian_install_log_title);
+        installLogTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         content.addView(installLogTitle, matchWrap());
+
+        TextView installLogHint = new TextView(this);
+        installLogHint.setText(R.string.bfu_debian_install_log_hint);
+        installLogHint.setTextSize(12f);
+        content.addView(installLogHint, matchWrap());
 
         installLog = new TextView(this);
         installLog.setTypeface(Typeface.MONOSPACE);
         installLog.setTextSize(12f);
-        installLog.setMinLines(10);
-        installLog.setMaxLines(18);
+        installLog.setTextColor(Color.rgb(222, 231, 240));
+        installLog.setHighlightColor(Color.rgb(55, 96, 145));
+        installLog.setLineSpacing(0f, 1.15f);
+        installLog.setMinLines(12);
+        installLog.setMaxLines(22);
         installLog.setVerticalScrollBarEnabled(true);
-        installLog.setMovementMethod(new ScrollingMovementMethod());
-        int logPadding = (int) (8 * getResources().getDisplayMetrics().density);
+        installLog.setScrollbarFadingEnabled(false);
+        installLog.setTextIsSelectable(true);
+        int logPadding = (int) (12 * getResources().getDisplayMetrics().density);
         installLog.setPadding(logPadding, logPadding, logPadding, logPadding);
-        content.addView(installLog, matchWrap());
+        GradientDrawable logBackground = new GradientDrawable();
+        logBackground.setColor(Color.rgb(13, 18, 23));
+        logBackground.setCornerRadius(10 * getResources().getDisplayMetrics().density);
+        logBackground.setStroke(
+                Math.max(1, (int) getResources().getDisplayMetrics().density),
+                Color.rgb(59, 72, 84));
+        installLog.setBackground(logBackground);
+        LinearLayout.LayoutParams logLayout = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        int logMargin = (int) (8 * getResources().getDisplayMetrics().density);
+        logLayout.topMargin = logMargin;
+        logLayout.bottomMargin = padding;
+        content.addView(installLog, logLayout);
 
         ScrollView scrollView = new ScrollView(this);
         scrollView.addView(content);
@@ -365,9 +389,10 @@ public class BootActivity extends Activity {
             String log = DebianRootfsInstaller.readLogTail(this);
             if (log.isEmpty()) log = getString(R.string.bfu_debian_install_log_none);
             if (!log.equals(lastDisplayedInstallLog)) {
+                if (hasInstallLogSelection() || !isInstallLogAtBottom()) return;
                 lastDisplayedInstallLog = log;
                 installLog.setText(log);
-                if (status.contains(" RUNNING ")) scrollInstallLogToBottom();
+                scrollInstallLogToBottom();
             }
         } catch (IOException e) {
             installLog.setText(getString(R.string.bfu_debian_install_log_failed,
@@ -382,6 +407,21 @@ public class BootActivity extends Activity {
                     - installLog.getHeight();
             installLog.scrollTo(0, Math.max(0, scroll));
         });
+    }
+
+    private boolean hasInstallLogSelection() {
+        int start = installLog.getSelectionStart();
+        int end = installLog.getSelectionEnd();
+        return start >= 0 && end >= 0 && start != end;
+    }
+
+    private boolean isInstallLogAtBottom() {
+        if (lastDisplayedInstallLog.isEmpty() || installLog.getLayout() == null) return true;
+        int contentBottom = installLog.getLayout().getLineTop(installLog.getLineCount());
+        int visibleBottom = installLog.getScrollY() + installLog.getHeight()
+                - installLog.getPaddingBottom();
+        int tolerance = (int) (24 * getResources().getDisplayMetrics().density);
+        return visibleBottom >= contentBottom - tolerance;
     }
 
     private boolean isUserUnlocked() {

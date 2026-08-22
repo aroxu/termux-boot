@@ -50,7 +50,7 @@ esac
 
 if [ "$MODE" != "--inside-mount-ns" ]; then
     [ -x "$PREFIX/bin/unshare" ] || \
-        fail 10 "missing $PREFIX/bin/unshare; run: pkg install debootstrap util-linux"
+        fail 10 "missing $PREFIX/bin/unshare; run: pkg install debootstrap util-linux mount-utils"
     echo "Creating private mount namespace for rootfs installation"
     exec "$PREFIX/bin/unshare" --mount --fork \
         /system/bin/sh "$0" "$DEBOOTSTRAP_ARCHIVE" "$KEYRING_DEB" \
@@ -67,7 +67,7 @@ for tool in awk cat chroot chmod cp date df dpkg dpkg-deb gpgv grep gzip \
     id mkdir mknod mount mv perl rm rmdir sed sha256sum stat sync tar tr umount \
     wget; do
     [ -x "$PREFIX/bin/$tool" ] || \
-        fail 10 "missing $PREFIX/bin/$tool; run in Termux: pkg install debootstrap util-linux"
+        fail 10 "missing $PREFIX/bin/$tool; run in Termux: pkg install debootstrap util-linux mount-utils"
 done
 
 [ "$(id -u)" = "0" ] || fail 11 "installer did not obtain uid 0"
