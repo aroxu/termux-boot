@@ -27,8 +27,12 @@ final class BfuRuntime {
         final File run;
         final File scripts;
         final File tmp;
+        final File downloads;
         final File testScript;
         final File rootfsProbeScript;
+        final File rootfsInstallerScript;
+        final File debootstrapArchive;
+        final File archiveKeyringPackage;
 
         Layout(File root) {
             this.root = root;
@@ -38,8 +42,13 @@ final class BfuRuntime {
             run = new File(root, "run");
             scripts = new File(root, "scripts");
             tmp = new File(root, "tmp");
+            downloads = new File(root, "downloads");
             testScript = new File(scripts, "test.sh");
             rootfsProbeScript = new File(scripts, "probe-rootfs.sh");
+            rootfsInstallerScript = new File(scripts, "install-debian-rootfs.sh");
+            debootstrapArchive = new File(downloads, "debootstrap_1.0.144.tar.gz");
+            archiveKeyringPackage = new File(downloads,
+                    "debian-archive-keyring_2023.3+deb12u2_all.deb");
         }
     }
 
@@ -55,9 +64,12 @@ final class BfuRuntime {
         ensureDirectory(layout.run);
         ensureDirectory(layout.scripts);
         ensureDirectory(layout.tmp);
+        ensureDirectory(layout.downloads);
 
         writePrivateFile(layout.testScript, TEST_SCRIPT, true);
         copyPrivateAsset(deContext, "bfu/probe-rootfs.sh", layout.rootfsProbeScript, true);
+        copyPrivateAsset(deContext, "bfu/install-debian-rootfs.sh",
+                layout.rootfsInstallerScript, true);
         return layout;
     }
 

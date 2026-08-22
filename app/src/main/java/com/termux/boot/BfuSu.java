@@ -41,6 +41,16 @@ final class BfuSu {
         }
     }
 
+    static final class StartedProcess {
+        final String command;
+        final Process process;
+
+        StartedProcess(String command, Process process) {
+            this.command = command;
+            this.process = process;
+        }
+    }
+
     private BfuSu() {}
 
     static Result run(String shellCommand, long timeoutMs) throws InterruptedException {
@@ -66,6 +76,34 @@ final class BfuSu {
 
         String output = failures.length() == 0 ? "no executable su found" : failures.toString();
         return new Result("none", EXIT_NOT_STARTED, false, output);
+    }
+
+    static StartedProcess start(String shellCommand) throws IOException {
+        if (shellCommand == null || shellCommand.isEmpty()
+                || shellCommand.indexOf('\0') >= 0) {
+            throw new IllegalArgumentException("Invalid su command");
+        }
+
+        StringBuilder failures = new StringBuilder();
+        for (String candidate : SU_CANDIDATES) {
+            if (candidate.startsWith("/")) {
+                File executable = new File(candidate);
+                if (!executable.isFile() || !executable.canExecute()) continue;
+            }
+
+            try {
+                ProcessBuilder builder = new ProcessBuilder(candidate, "-c", shellCommand);
+                builder.redirectErrorStream(true);
+                return new StartedProcess(candidate, builder.start());
+            } catch (IOException e) {
+                if (failures.length() > 0) failures.append("; ");
+                failures.append(candidate).append(": ").append(sanitize(e.getMessage()));
+            }
+        }
+
+        String message = failures.length() == 0
+                ? "no executable su found" : failures.toString();
+        throw new IOException(message);
     }
 
     static String shellQuote(String value) {

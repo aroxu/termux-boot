@@ -22,6 +22,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class BfuBootService extends Service {
 
     static final String ACTION_START = "com.termux.boot.action.START_BFU";
+    static final String ACTION_INSTALL_DEBIAN =
+            "com.termux.boot.action.INSTALL_DEBIAN_ROOTFS";
 
     private static final String TAG = "TermuxBFU";
     private static final String NOTIFICATION_CHANNEL_ID = "termux_bfu";
@@ -29,6 +31,7 @@ public class BfuBootService extends Service {
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final AtomicBoolean startupChecksStarted = new AtomicBoolean(false);
+    private final AtomicBoolean rootfsInstallStarted = new AtomicBoolean(false);
 
     private final BroadcastReceiver userUnlockedReceiver = new BroadcastReceiver() {
         @Override
@@ -56,10 +59,26 @@ public class BfuBootService extends Service {
             return START_NOT_STICKY;
         }
 
-        if (isUserUnlocked()) handOffAfterUnlock();
+        boolean userUnlocked = isUserUnlocked();
+        if (userUnlocked) handOffAfterUnlock();
 
         if (startupChecksStarted.compareAndSet(false, true)) {
             executor.execute(this::runBfuStartupChecks);
+        }
+
+        if (intent != null && ACTION_INSTALL_DEBIAN.equals(intent.getAction())) {
+            if (!userUnlocked) {
+                Log.w(TAG, "Debian rootfs install rejected while CE is locked");
+                DebianRootfsInstaller.recordRejected(this,
+                        "unlock Android before installing the Debian rootfs");
+            } else if (rootfsInstallStarted.compareAndSet(false, true)) {
+                DebianRootfsInstaller.recordQueued(this);
+                executor.execute(this::runDebianRootfsInstall);
+            } else {
+                Log.i(TAG, "Debian rootfs install already running in this service");
+                DebianRootfsInstaller.recordMessage(this,
+                        "REQUEST_IGNORED: a Debian rootfs installation is already running");
+            }
         }
         return START_STICKY;
     }
@@ -78,6 +97,16 @@ public class BfuBootService extends Service {
     @Override
     public IBinder onBind(Intent intent) {
         return null;
+    }
+
+    static void requestDebianRootfsInstall(Context context) {
+        Intent intent = new Intent(context, BfuBootService.class)
+                .setAction(ACTION_INSTALL_DEBIAN);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            context.startForegroundService(intent);
+        } else {
+            context.startService(intent);
+        }
     }
 
     private void runBfuStartupChecks() {
@@ -125,6 +154,19 @@ public class BfuBootService extends Service {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             Log.w(TAG, "Root or rootfs probe interrupted");
+        }
+    }
+
+    private void runDebianRootfsInstall() {
+        try {
+            BfuRuntime.Layout layout = BfuRuntime.provision(this);
+            DebianRootfsInstaller.install(this, layout);
+        } catch (IOException | IllegalStateException e) {
+            Log.e(TAG, "Could not provision the Debian rootfs installer", e);
+            DebianRootfsInstaller.recordRejected(this,
+                    "installer provisioning failed: " + BfuSu.sanitize(e.getMessage()));
+        } finally {
+            rootfsInstallStarted.set(false);
         }
     }
 
