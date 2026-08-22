@@ -141,6 +141,8 @@ final class DebianLauncher {
                     && result.output.contains("dbus_service=active")
                     && result.output.contains("dbus_bus=ok")
                     && result.output.contains("ssh_service=active")
+                    && result.output.contains("boot_proof_service=active")
+                    && result.output.contains("boot_proof_marker=present")
                     && result.output.contains("listen_22=true");
             appendLog(layout.lifecycleLog,
                     "ANDROID_HEALTH attempt=" + attempts

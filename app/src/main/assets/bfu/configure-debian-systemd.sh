@@ -233,7 +233,8 @@ EOF_APT_HTTPS
 apt-get -o Acquire::Retries=3 update
 
 for tool in /sbin/init /usr/bin/systemctl /usr/bin/journalctl /usr/bin/busctl \
-    /usr/bin/timeout /usr/bin/ss /usr/bin/awk; do
+    /usr/bin/timeout /usr/bin/ss /usr/bin/awk /usr/bin/touch \
+    /usr/sbin/shutdown; do
     [ -x "$tool" ] || {
         echo "ERROR: required BFU health tool is missing: $tool"
         exit 35
@@ -326,6 +327,20 @@ RuntimeMaxUse=16M
 ForwardToConsole=no
 EOF_JOURNALD
 
+cat > /etc/systemd/system/termux-bfu-boot-proof.service <<'EOF_BOOT_PROOF'
+[Unit]
+Description=Termux BFU enabled-unit boot proof
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/touch /run/termux-bfu-enabled-service.ready
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF_BOOT_PROOF
+
 # These units either try to configure Android-owned kernel/network state or
 # operate directly on bind-mounted host pseudo filesystems.
 systemctl --root=/ --no-reload mask \
@@ -350,9 +365,11 @@ systemctl --root=/ --no-reload mask \
     sys-kernel-tracing.mount
 
 : > /etc/fstab
-systemctl --root=/ --no-reload enable ssh.service
+systemctl --root=/ --no-reload enable \
+    ssh.service termux-bfu-boot-proof.service
 systemctl --root=/ --no-reload set-default multi-user.target
 [ "$(systemctl --root=/ is-enabled ssh.service)" = enabled ]
+[ "$(systemctl --root=/ is-enabled termux-bfu-boot-proof.service)" = enabled ]
 
 cat > "${READY_MARKER}.new" <<EOF_READY
 format=1
@@ -360,6 +377,7 @@ suite=trixie
 architecture=arm64
 init=/sbin/init
 ssh_service=ssh.service
+boot_proof_service=termux-bfu-boot-proof.service
 ssh_user=debian
 ssh_port=22
 configured_epoch=$(date +%s)
@@ -369,7 +387,7 @@ chmod 0644 "${READY_MARKER}.new"
 mv "${READY_MARKER}.new" "$READY_MARKER"
 sync
 
-echo "CONFIGURE_SUCCEEDED: Debian 13 systemd and public-key-only SSH are ready"
+echo "CONFIGURE_SUCCEEDED: Debian 13 systemd, enabled-unit proof, and public-key-only SSH are ready"
 DEBIAN_CONFIG
 
 sync

@@ -17,7 +17,7 @@ import java.util.Map;
 final class BfuRuntime {
 
     private static final String NAMESPACE_PROBE_SHA256 =
-            "e46e38065c053d281e27ef9d7c420f38ca9cde2b44796ff61f63ff0ddad09b3a";
+            "dd5e7cb52ac785f4aa6d04694ed6d3db762d93820e274dd18ab36ac1fb7c6231";
 
     private static final String TEST_SCRIPT =
             "#!/system/bin/sh\n" +

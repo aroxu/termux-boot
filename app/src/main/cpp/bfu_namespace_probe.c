@@ -262,6 +262,8 @@ static int validate_rootfs(const char *root, bool require_systemd) {
                 || !file_has_exact_line(path, "suite=trixie")
                 || !file_has_exact_line(path, "architecture=arm64")
                 || !file_has_exact_line(path, "ssh_service=ssh.service")
+                || !file_has_exact_line(path,
+                                        "boot_proof_service=termux-bfu-boot-proof.service")
                 || !file_has_exact_line(path, "ssh_user=debian")
                 || !file_has_exact_line(path, "ssh_port=22")) {
             return fail_message("systemd_not_provisioned",
@@ -273,7 +275,8 @@ static int validate_rootfs(const char *root, bool require_systemd) {
         }
         const char *const required_tools[] = {
                 "usr/bin/systemctl", "usr/bin/journalctl", "usr/bin/busctl",
-                "usr/bin/timeout", "usr/bin/ss", "usr/bin/awk"
+                "usr/bin/timeout", "usr/bin/ss", "usr/bin/awk", "usr/bin/touch",
+                "usr/sbin/shutdown"
         };
         const size_t tool_count = sizeof(required_tools) / sizeof(required_tools[0]);
         for (size_t index = 0; index < tool_count; index++) {
@@ -1340,6 +1343,10 @@ static int enter_debian_health(const char *root) {
             "is-active dbus.service 2>/dev/null || true); "
             "ssh_service=$(/usr/bin/timeout -k 1 3 /usr/bin/systemctl "
             "is-active ssh.service 2>/dev/null || true); "
+            "boot_proof_service=$(/usr/bin/timeout -k 1 3 /usr/bin/systemctl "
+            "is-active termux-bfu-boot-proof.service 2>/dev/null || true); "
+            "if [ -f /run/termux-bfu-enabled-service.ready ]; then "
+            "boot_proof_marker=present; else boot_proof_marker=missing; fi; "
             "default_target=$(/usr/bin/timeout -k 1 3 /usr/bin/systemctl "
             "get-default 2>/dev/null || true); "
             "if /usr/bin/timeout -k 1 3 /usr/bin/busctl --system --no-pager list "
@@ -1349,11 +1356,15 @@ static int enter_debian_health(const char *root) {
             "else print \"false\" }'); "
             "printf 'BFU_DEBIAN_HEALTH pid1=%s pid1_start_ticks=%s "
             "system_state=%s dbus_service=%s dbus_bus=%s ssh_service=%s "
+            "boot_proof_service=%s boot_proof_marker=%s "
             "default_target=%s listen_22=%s\\n' \"$pid1\" \"$pid1_start_ticks\" "
             "\"$system_state\" \"$dbus_service\" \"$dbus_bus\" "
-            "\"$ssh_service\" \"$default_target\" \"$listen_22\"; "
+            "\"$ssh_service\" \"$boot_proof_service\" \"$boot_proof_marker\" "
+            "\"$default_target\" \"$listen_22\"; "
             "if [ \"$pid1\" = systemd ] && [ \"$dbus_service\" = active ] "
             "&& [ \"$dbus_bus\" = ok ] && [ \"$ssh_service\" = active ] "
+            "&& [ \"$boot_proof_service\" = active ] "
+            "&& [ \"$boot_proof_marker\" = present ] "
             "&& [ \"$default_target\" = multi-user.target ] "
             "&& [ \"$listen_22\" = true ]; then exit 0; fi; "
             "printf '%s\\n' BFU_DEBIAN_DIAGNOSTICS_BEGIN; "
@@ -1382,8 +1393,10 @@ static int enter_debian_health_child(const char *root, const char *argument) {
 }
 
 static int enter_debian_systemctl_shutdown(const char *root, const char *mode) {
-    if (strcmp(mode, "poweroff") != 0 && strcmp(mode, "reboot") != 0) {
-        return fail_message("shutdown_test_mode", "only_poweroff_or_reboot_allowed", 108);
+    if (strcmp(mode, "poweroff") != 0 && strcmp(mode, "reboot") != 0
+            && strcmp(mode, "shutdown") != 0) {
+        return fail_message("shutdown_test_mode",
+                            "only_poweroff_reboot_or_shutdown_allowed", 108);
     }
     if (chdir(root) != 0) return fail_errno("shutdown_test_chdir_rootfs", 108);
     if (chroot(".") != 0) return fail_errno("shutdown_test_chroot", 108);
@@ -1393,6 +1406,13 @@ static int enter_debian_systemctl_shutdown(const char *root, const char *mode) {
     setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", 1);
     setenv("LANG", "C.UTF-8", 1);
     setenv("container", "termux-bfu", 1);
+    if (strcmp(mode, "shutdown") == 0) {
+        char *const arguments[] = {
+                "shutdown", "--poweroff", "--no-wall", "now", NULL
+        };
+        execv("/usr/sbin/shutdown", arguments);
+        return fail_errno("shutdown_test_exec_shutdown", 108);
+    }
     char *const arguments[] = {"systemctl", "--no-block", (char *) mode, NULL};
     execv("/usr/bin/systemctl", arguments);
     return fail_errno("shutdown_test_exec_systemctl", 108);
@@ -1540,8 +1560,10 @@ static int wait_for_supervisor_exit(const char *control_dir) {
 
 static int run_shutdown_test(const char *root, const char *control_dir,
                              const char *mode) {
-    if (strcmp(mode, "poweroff") != 0 && strcmp(mode, "reboot") != 0) {
-        return fail_message("shutdown_test_mode", "only_poweroff_or_reboot_allowed", 108);
+    if (strcmp(mode, "poweroff") != 0 && strcmp(mode, "reboot") != 0
+            && strcmp(mode, "shutdown") != 0) {
+        return fail_message("shutdown_test_mode",
+                            "only_poweroff_reboot_or_shutdown_allowed", 108);
     }
     printf("BFU_DEBIAN_SHUTDOWN_TEST_REQUESTED mode=%s\n", mode);
     int command_result = run_in_debian_namespaces(root, control_dir,
@@ -1723,7 +1745,7 @@ static void usage(const char *program) {
             "  %s health /data/local/debian CONTROL_DIR\n"
             "  %s stop /data/local/debian CONTROL_DIR\n"
             "  %s restart /data/local/debian CONTROL_DIR LIFECYCLE_LOG\n"
-            "  %s shutdown-test /data/local/debian CONTROL_DIR poweroff|reboot\n",
+            "  %s shutdown-test /data/local/debian CONTROL_DIR poweroff|reboot|shutdown\n",
             program, program, program, program, program, program, program);
 }
 

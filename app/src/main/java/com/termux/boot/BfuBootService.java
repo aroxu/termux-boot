@@ -83,9 +83,11 @@ public class BfuBootService extends Service {
         boolean userUnlocked = isUserUnlocked();
         if (userUnlocked && ACTION_START.equals(action)) handOffAfterUnlock();
 
-        if (ACTION_START.equals(action)
+        if (ACTION_START.equals(action) && !userUnlocked
                 && startupChecksStarted.compareAndSet(false, true)) {
             executor.execute(this::runBfuStartupChecks);
+        } else if (ACTION_START.equals(action) && userUnlocked) {
+            Log.i(TAG, "BFU startup checks skipped because Android is already unlocked");
         }
 
         if (ACTION_INSTALL_DEBIAN.equals(action)) {
