@@ -1,7 +1,14 @@
 package com.termux.boot;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.os.Bundle;
+import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.UserManager;
+import android.graphics.Typeface;
+import android.text.method.ScrollingMovementMethod;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.CheckBox;
@@ -20,13 +27,39 @@ public class BootActivity extends Activity {
     private CheckBox startNormalBoot;
     private TextView rootProbeStatus;
     private TextView rootfsProbeStatus;
+    private TextView installStatus;
+    private TextView installLog;
+    private Handler liveLogHandler;
+    private String lastDisplayedInstallLog = "";
+
+    private final Runnable refreshLiveLog = new Runnable() {
+        @Override
+        public void run() {
+            refreshInstallerStatus();
+            liveLogHandler.postDelayed(this, 1_000L);
+        }
+    };
 
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setTitle(R.string.bfu_settings_title);
+        liveLogHandler = new Handler(Looper.getMainLooper());
         setContentView(buildSettingsView());
         loadSettings();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        liveLogHandler.removeCallbacks(refreshLiveLog);
+        liveLogHandler.post(refreshLiveLog);
+    }
+
+    @Override
+    protected void onPause() {
+        liveLogHandler.removeCallbacks(refreshLiveLog);
+        super.onPause();
     }
 
     private ScrollView buildSettingsView() {
@@ -63,6 +96,33 @@ public class BootActivity extends Activity {
         save.setOnClickListener(view -> saveAndProvision());
         content.addView(save, matchWrap());
 
+        TextView installExplanation = new TextView(this);
+        installExplanation.setText(R.string.bfu_debian_install_explanation);
+        content.addView(installExplanation, matchWrap());
+
+        Button install = new Button(this);
+        install.setText(R.string.bfu_install_debian);
+        install.setOnClickListener(view -> confirmDebianInstall());
+        content.addView(install, matchWrap());
+
+        installStatus = new TextView(this);
+        content.addView(installStatus, matchWrap());
+
+        TextView installLogTitle = new TextView(this);
+        installLogTitle.setText(R.string.bfu_debian_install_log_title);
+        content.addView(installLogTitle, matchWrap());
+
+        installLog = new TextView(this);
+        installLog.setTypeface(Typeface.MONOSPACE);
+        installLog.setTextSize(12f);
+        installLog.setMinLines(10);
+        installLog.setMaxLines(18);
+        installLog.setVerticalScrollBarEnabled(true);
+        installLog.setMovementMethod(new ScrollingMovementMethod());
+        int logPadding = (int) (8 * getResources().getDisplayMetrics().density);
+        installLog.setPadding(logPadding, logPadding, logPadding, logPadding);
+        content.addView(installLog, matchWrap());
+
         ScrollView scrollView = new ScrollView(this);
         scrollView.addView(content);
         return scrollView;
@@ -72,6 +132,7 @@ public class BootActivity extends Activity {
         enableBfu.setChecked(BfuPreferences.isEnabled(this));
         startNormalBoot.setChecked(BfuPreferences.shouldStartNormalBoot(this));
         refreshProbeStatus();
+        refreshInstallerStatus();
     }
 
     private void refreshProbeStatus() {
@@ -104,6 +165,84 @@ public class BootActivity extends Activity {
             Toast.makeText(this, getString(R.string.bfu_provision_failed, e.getMessage()),
                     Toast.LENGTH_LONG).show();
         }
+    }
+
+    private void confirmDebianInstall() {
+        if (!enableBfu.isChecked()) {
+            Toast.makeText(this, R.string.bfu_install_requires_enabled,
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (!isUserUnlocked()) {
+            Toast.makeText(this, R.string.bfu_install_requires_unlock,
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.bfu_install_confirm_title)
+                .setMessage(R.string.bfu_install_confirm_message)
+                .setNegativeButton(android.R.string.cancel, null)
+                .setPositiveButton(R.string.bfu_install_confirm_button,
+                        (dialog, which) -> startDebianInstall())
+                .show();
+    }
+
+    private void startDebianInstall() {
+        try {
+            BfuPreferences.save(this, enableBfu.isChecked(), startNormalBoot.isChecked());
+            BfuRuntime.provision(this);
+            BfuBootService.requestDebianRootfsInstall(this);
+            Toast.makeText(this, R.string.bfu_install_requested,
+                    Toast.LENGTH_LONG).show();
+            refreshInstallerStatus();
+        } catch (IOException | IllegalStateException e) {
+            Toast.makeText(this, getString(R.string.bfu_provision_failed, e.getMessage()),
+                    Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void refreshInstallerStatus() {
+        if (installStatus == null || installLog == null) return;
+
+        String status;
+        try {
+            status = DebianRootfsInstaller.readStatus(this);
+            if (status.isEmpty()) status = getString(R.string.bfu_debian_install_status_none);
+            installStatus.setText(getString(R.string.bfu_debian_install_status, status));
+        } catch (IOException e) {
+            status = "";
+            installStatus.setText(getString(R.string.bfu_debian_install_status_failed,
+                    e.getMessage()));
+        }
+
+        try {
+            String log = DebianRootfsInstaller.readLogTail(this);
+            if (log.isEmpty()) log = getString(R.string.bfu_debian_install_log_none);
+            if (!log.equals(lastDisplayedInstallLog)) {
+                lastDisplayedInstallLog = log;
+                installLog.setText(log);
+                if (status.contains(" RUNNING ")) scrollInstallLogToBottom();
+            }
+        } catch (IOException e) {
+            installLog.setText(getString(R.string.bfu_debian_install_log_failed,
+                    e.getMessage()));
+        }
+    }
+
+    private void scrollInstallLogToBottom() {
+        installLog.post(() -> {
+            if (installLog.getLayout() == null) return;
+            int scroll = installLog.getLayout().getLineTop(installLog.getLineCount())
+                    - installLog.getHeight();
+            installLog.scrollTo(0, Math.max(0, scroll));
+        });
+    }
+
+    private boolean isUserUnlocked() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return true;
+        UserManager userManager = (UserManager) getSystemService(USER_SERVICE);
+        return userManager != null && userManager.isUserUnlocked();
     }
 
     private static ViewGroup.LayoutParams matchWrap() {
