@@ -64,7 +64,7 @@ export TMPDIR="$BFU_ROOT/tmp"
 unset LD_PRELOAD || true
 
 for tool in awk cat chroot chmod cp date df dpkg dpkg-deb gpgv grep gzip \
-    id mkdir mknod mount mv perl rm rmdir sed sha256sum stat sync tar tr umount \
+    id mkdir mknod mount mv perl rm rmdir sed sha256sum stat sync tail tar tr umount \
     wget; do
     [ -x "$PREFIX/bin/$tool" ] || \
         fail 10 "missing $PREFIX/bin/$tool; run in Termux: pkg install debootstrap util-linux mount-utils"
@@ -97,6 +97,11 @@ cleanup() {
         echo "INSTALL_FAILED: exit=$result"
         if [ -d "$STAGE" ]; then
             echo "Partial rootfs preserved for diagnosis at $STAGE"
+        fi
+        if [ -s "$STAGE/debootstrap/debootstrap.log" ]; then
+            echo "DEBOOTSTRAP_LOG_TAIL_BEGIN"
+            tail -n 120 "$STAGE/debootstrap/debootstrap.log"
+            echo "DEBOOTSTRAP_LOG_TAIL_END"
         fi
     fi
     exit "$result"
@@ -195,6 +200,60 @@ RUNNER="$WORK/debootstrap-portable"
 [ -s "$SOURCE_ROOT/debootstrap" ] || fail 24 "upstream debootstrap script was not extracted"
 [ -s "$SOURCE_ROOT/functions" ] || fail 25 "upstream debootstrap functions were not extracted"
 [ -s "$KEYRING" ] || fail 26 "Debian archive keyring was not extracted"
+
+# Upstream temporarily assigns the target PATH to the special shell builtin
+# `eval` in in_target(). Android's mksh keeps that assignment in the parent
+# shell, so later host-side helpers unexpectedly resolve to Android toybox.
+# In particular, toybox sed does not interpret debootstrap's GNU-BRE `\+` URL
+# expression, producing https:__... instead of the downloaded apt-list name.
+# Keep the target PATH inside a subshell while preserving upstream diagnostics.
+cat >> "$SOURCE_ROOT/functions" <<'EOF'
+
+# TERMUX_BFU_ANDROID_PATH_SCOPE
+bfu_in_target () {
+    (
+        PATH=/sbin:/usr/sbin:/bin:/usr/bin
+        export PATH
+        eval "$CHROOT_CMD \"\$@\""
+    )
+}
+
+in_target_nofail () {
+    if ! bfu_in_target "$@" 2>/dev/null; then
+        true
+    fi
+    return 0
+}
+
+in_target_failmsg () {
+    local code msg arg
+    code="$1"
+    msg="$2"
+    arg="$3"
+    shift; shift; shift
+    if ! bfu_in_target "$@"; then
+        warning "$code" "$msg" "$arg"
+        # Try to point the user at the actual failing package, matching
+        # upstream debootstrap's in_target_failmsg implementation.
+        msg="See %s for details"
+        if [ -e "$TARGET/debootstrap/debootstrap.log" ]; then
+            arg="$TARGET/debootstrap/debootstrap.log"
+            local pkg
+            pkg="$(grep '^dpkg: error processing ' "$TARGET/debootstrap/debootstrap.log" | head -n 1 | sed 's/\(error processing \)\(package \|archive \)/\1/' | cut -d ' ' -f 4)"
+            if [ -n "$pkg" ]; then
+                msg="$msg (possibly the package $pkg is at fault)"
+            fi
+        else
+            arg="the log"
+        fi
+        warning "$code" "$msg" "$arg"
+        return 1
+    fi
+    return 0
+}
+EOF
+grep -Fq 'TERMUX_BFU_ANDROID_PATH_SCOPE' "$SOURCE_ROOT/functions" || \
+    fail 28 "the Android host-PATH compatibility patch was not applied"
 
 # Upstream assumes host dpkg is always /usr/bin/dpkg. Android has no /usr tree;
 # keep every other upstream behavior intact and resolve dpkg through the AFU PATH.
