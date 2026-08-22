@@ -13,6 +13,8 @@ import android.os.UserManager;
 import android.util.Log;
 
 import java.io.File;
+import java.io.FileWriter;
+import java.io.IOException;
 import java.util.Arrays;
 
 public class BootReceiver extends BroadcastReceiver {
@@ -27,6 +29,7 @@ public class BootReceiver extends BroadcastReceiver {
         String action = intent == null ? null : intent.getAction();
         if (Intent.ACTION_LOCKED_BOOT_COMPLETED.equals(action)) {
             Log.i(TAG, "LOCKED_BOOT_COMPLETED received");
+            appendLockedBootMarker(context);
             if (isUserUnlocked(context)) {
                 Log.i(TAG, "User is already unlocked; using normal Termux boot path");
                 startNormalTermuxBoot(context);
@@ -49,6 +52,19 @@ public class BootReceiver extends BroadcastReceiver {
                 // Defensive fallback for devices that deliver broadcasts out of order.
                 startBfuEnvironment(context);
             }
+        }
+    }
+
+    private static void appendLockedBootMarker(Context context) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return;
+
+        Context deContext = context.createDeviceProtectedStorageContext();
+        File marker = new File(deContext.getFilesDir(), "bfu-boot.log");
+        try (FileWriter writer = new FileWriter(marker, true)) {
+            writer.write("LOCKED_BOOT_COMPLETED " + System.currentTimeMillis() + "\n");
+            Log.i(TAG, "DE locked boot marker appended: " + marker);
+        } catch (IOException e) {
+            Log.e(TAG, "Failed to append DE locked boot marker: " + marker, e);
         }
     }
 
