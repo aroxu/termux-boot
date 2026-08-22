@@ -31,11 +31,11 @@
     <string name="bfu_saved">BFU settings saved. Runtime: %1$s</string>
     <string name="bfu_provision_failed">BFU provisioning failed: %1$s</string>
     <string name="bfu_debian_install_explanation">Rootfs installation runs only after unlock. In Termux, first run: pkg install debootstrap util-linux. The app downloads pinned official Debian artifacts, verifies SHA-256, and builds a staging tree before publishing /data/local/debian.</string>
-    <string name="bfu_install_debian">Install Debian 12 arm64 rootfs</string>
+    <string name="bfu_install_debian">Install Debian 13 Trixie arm64 rootfs</string>
     <string name="bfu_install_requires_enabled">Enable Direct Boot Debian bootstrap before installing.</string>
     <string name="bfu_install_requires_unlock">Unlock Android before installing the Debian rootfs.</string>
-    <string name="bfu_install_confirm_title">Install Debian rootfs?</string>
-    <string name="bfu_install_confirm_message">This downloads Debian packages and runs upstream debootstrap as pre-authorized Magisk root. Existing /data/local/debian is never overwritten. Keep this app open to watch the live log.</string>
+    <string name="bfu_install_confirm_title">Install Debian 13 Trixie rootfs?</string>
+    <string name="bfu_install_confirm_message">This downloads Debian 13 Trixie packages and runs upstream debootstrap as pre-authorized Magisk root. Existing /data/local/debian is never overwritten or upgraded in place. Keep this app open to watch the live log.</string>
     <string name="bfu_install_confirm_button">Install</string>
     <string name="bfu_install_requested">Debian installation requested. Live output appears below.</string>
     <string name="bfu_debian_install_status">Debian installer status:\n%1$s</string>

@@ -37,15 +37,15 @@ final class DebianRootfsInstaller {
     private static final int MAX_CHILD_LINE_CHARS = 8 * 1024;
 
     private static final Artifact DEBOOTSTRAP = new Artifact(
-            "upstream debootstrap 1.0.144",
+            "Debian Trixie debootstrap 1.0.141",
             "https://deb.debian.org/debian/pool/main/d/debootstrap/"
-                    + "debootstrap_1.0.144.tar.gz",
-            "3e1bafd4bb813cf4d6c17a0adca449ca07603263a8ea40a67257d2d60c186f9a");
+                    + "debootstrap_1.0.141.tar.gz",
+            "232ec755f4b1f445f829996885846abba6f1b6fd55d049476ab26ddd8c4b4e1b");
     private static final Artifact ARCHIVE_KEYRING = new Artifact(
-            "Debian Bookworm archive keyring 2023.3+deb12u2",
+            "Debian Trixie archive keyring 2025.1",
             "https://deb.debian.org/debian/pool/main/d/debian-archive-keyring/"
-                    + "debian-archive-keyring_2023.3+deb12u2_all.deb",
-            "f699e2f88dca05212f2a452b58475f2993cb6993dfbafb1d0205a3291eb8b4b8");
+                    + "debian-archive-keyring_2025.1_all.deb",
+            "9ea7778e443144ca490668737a8ab22dd3e748bb99e805e22ec055abeb3c7fac");
 
     private static final Object FILE_LOCK = new Object();
 
@@ -58,7 +58,7 @@ final class DebianRootfsInstaller {
         try {
             log = new LogSink(logFile(deContext));
             log.line("============================================================");
-            updateStage(deContext, log, "Preparing Debian 12 Bookworm arm64 installation");
+            updateStage(deContext, log, "Preparing Debian 13 Trixie arm64 installation");
             log.line("Final target: " + BfuRootfsProbe.ROOTFS_PATH);
             log.line("Termux CE is used only for AFU bootstrap tools; no rootfs file is stored there");
 
@@ -91,7 +91,7 @@ final class DebianRootfsInstaller {
             }
 
             log.line("Debian rootfs installation completed successfully");
-            writeStatus(deContext, "SUCCEEDED Debian 12 rootfs is ready at "
+            writeStatus(deContext, "SUCCEEDED Debian 13 Trixie rootfs is ready at "
                     + BfuRootfsProbe.ROOTFS_PATH);
             Log.i(TAG, "Debian rootfs installation succeeded");
         } catch (InterruptedException e) {

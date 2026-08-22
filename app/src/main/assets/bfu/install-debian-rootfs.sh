@@ -9,8 +9,11 @@ PREFIX=/data/data/com.termux/files/usr
 TARGET=/data/local/debian
 STAGE=/data/local/debian.installing
 MIRROR=https://deb.debian.org/debian
-DEBOOTSTRAP_SHA256=3e1bafd4bb813cf4d6c17a0adca449ca07603263a8ea40a67257d2d60c186f9a
-KEYRING_SHA256=f699e2f88dca05212f2a452b58475f2993cb6993dfbafb1d0205a3291eb8b4b8
+SUITE=trixie
+DEBOOTSTRAP_VERSION=1.0.141
+ARCHIVE_KEYRING_VERSION=2025.1
+DEBOOTSTRAP_SHA256=232ec755f4b1f445f829996885846abba6f1b6fd55d049476ab26ddd8c4b4e1b
+KEYRING_SHA256=9ea7778e443144ca490668737a8ab22dd3e748bb99e805e22ec055abeb3c7fac
 
 fail() {
     code="$1"
@@ -136,8 +139,11 @@ echo "$$" > "$LOCK_DIR/owner"
 if [ -d "$TARGET" ]; then
     if [ -f "$TARGET/.termux-bfu-rootfs" ] && \
        [ -x "$TARGET/bin/sh" ] && [ -s "$TARGET/etc/debian_version" ]; then
-        echo "ALREADY_INSTALLED: verified rootfs exists at $TARGET; no files changed"
-        exit 0
+        if grep -Fqx "suite=$SUITE" "$TARGET/.termux-bfu-rootfs"; then
+            echo "ALREADY_INSTALLED: verified Debian 13 Trixie rootfs exists at $TARGET; no files changed"
+            exit 0
+        fi
+        fail 20 "$TARGET contains a different verified Termux BFU rootfs; expected suite=$SUITE; refusing to overwrite or upgrade it"
     fi
     fail 20 "$TARGET already exists but is not a verified Termux BFU rootfs; refusing to overwrite it"
 fi
@@ -178,9 +184,9 @@ case "$WORK" in
 esac
 mkdir -p "$WORK/source" "$WORK/keyring"
 
-echo "Extracting verified upstream debootstrap 1.0.144"
+echo "Extracting verified Debian Trixie debootstrap $DEBOOTSTRAP_VERSION"
 tar -xzf "$DEBOOTSTRAP_ARCHIVE" -C "$WORK/source"
-echo "Extracting verified Debian Bookworm archive keyring"
+echo "Extracting verified Debian Trixie archive keyring $ARCHIVE_KEYRING_VERSION"
 dpkg-deb -x "$KEYRING_DEB" "$WORK/keyring"
 
 SOURCE_ROOT="$WORK/source/debootstrap"
@@ -209,7 +215,7 @@ retry_connrefused = on
 EOF
 export WGETRC
 
-echo "Starting Debian 12 Bookworm arm64 minbase bootstrap"
+echo "Starting Debian 13 Trixie arm64 minbase bootstrap"
 echo "Target: $STAGE"
 echo "Mirror: $MIRROR"
 DEBOOTSTRAP_DIR="$SOURCE_ROOT" /system/bin/sh "$RUNNER" \
@@ -218,12 +224,21 @@ DEBOOTSTRAP_DIR="$SOURCE_ROOT" /system/bin/sh "$RUNNER" \
     --keyring="$KEYRING" \
     --force-check-sig \
     --verbose \
-    bookworm "$STAGE" "$MIRROR"
+    "$SUITE" "$STAGE" "$MIRROR"
 
 echo "Validating completed rootfs"
 [ -x "$STAGE/bin/sh" ] || fail 30 "completed tree has no executable /bin/sh"
 [ -s "$STAGE/etc/debian_version" ] || fail 31 "completed tree has no Debian version"
 [ -s "$STAGE/var/lib/dpkg/status" ] || fail 32 "completed tree has no dpkg status database"
+
+debian_version="$(cat "$STAGE/etc/debian_version")"
+case "$debian_version" in
+    13|13.*) ;;
+    *) fail 35 "unexpected Debian version: $debian_version" ;;
+esac
+[ -s "$STAGE/etc/os-release" ] || fail 36 "completed tree has no os-release metadata"
+grep -Fqx 'VERSION_CODENAME=trixie' "$STAGE/etc/os-release" || \
+    fail 37 "completed tree is not Debian Trixie"
 
 rootfs_arch="$(chroot "$STAGE" /usr/bin/dpkg --print-architecture)"
 [ "$rootfs_arch" = "arm64" ] || fail 33 "unexpected rootfs architecture: $rootfs_arch"
@@ -232,11 +247,11 @@ passwd_owner="$(stat -c '%u:%g' "$STAGE/etc/passwd")"
 
 cat > "$STAGE/.termux-bfu-rootfs" <<EOF
 format=1
-suite=bookworm
+suite=$SUITE
 architecture=arm64
 mirror=$MIRROR
-debootstrap=1.0.144
-archive_keyring=2023.3+deb12u2
+debootstrap=$DEBOOTSTRAP_VERSION
+archive_keyring=$ARCHIVE_KEYRING_VERSION
 installed_epoch=$(date +%s)
 EOF
 chmod 644 "$STAGE/.termux-bfu-rootfs"
@@ -245,4 +260,4 @@ sync
 echo "Promoting completed staging tree to $TARGET"
 mv "$STAGE" "$TARGET"
 sync
-echo "INSTALL_SUCCEEDED: Debian rootfs ready at $TARGET"
+echo "INSTALL_SUCCEEDED: Debian 13 Trixie rootfs ready at $TARGET"

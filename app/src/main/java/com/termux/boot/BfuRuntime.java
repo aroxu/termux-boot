@@ -46,9 +46,9 @@ final class BfuRuntime {
             testScript = new File(scripts, "test.sh");
             rootfsProbeScript = new File(scripts, "probe-rootfs.sh");
             rootfsInstallerScript = new File(scripts, "install-debian-rootfs.sh");
-            debootstrapArchive = new File(downloads, "debootstrap_1.0.144.tar.gz");
+            debootstrapArchive = new File(downloads, "debootstrap_1.0.141.tar.gz");
             archiveKeyringPackage = new File(downloads,
-                    "debian-archive-keyring_2023.3+deb12u2_all.deb");
+                    "debian-archive-keyring_2025.1_all.deb");
         }
     }
 
