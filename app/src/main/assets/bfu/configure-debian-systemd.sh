@@ -232,6 +232,14 @@ deb https://deb.debian.org/debian-security trixie-security main
 EOF_APT_HTTPS
 apt-get -o Acquire::Retries=3 update
 
+for tool in /sbin/init /usr/bin/systemctl /usr/bin/journalctl /usr/bin/busctl \
+    /usr/bin/timeout /usr/bin/ss /usr/bin/awk; do
+    [ -x "$tool" ] || {
+        echo "ERROR: required BFU health tool is missing: $tool"
+        exit 35
+    }
+done
+
 echo termux-bfu > /etc/hostname
 : > /etc/machine-id
 systemd-machine-id-setup

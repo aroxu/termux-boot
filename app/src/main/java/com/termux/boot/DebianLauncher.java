@@ -1,6 +1,9 @@
 package com.termux.boot;
 
 import android.content.Context;
+import android.os.Build;
+import android.os.SystemClock;
+import android.os.UserManager;
 import android.util.Log;
 
 import java.io.ByteArrayOutputStream;
@@ -18,12 +21,35 @@ import java.util.TimeZone;
 /** Root-backed lifecycle control for the long-running Debian systemd namespace. */
 final class DebianLauncher {
 
-    enum Operation { START, STATUS, STOP }
+    enum Operation { START, RESTART, STATUS, STOP }
 
     private static final String TAG = "TermuxBFU";
     private static final String STATUS_FILE = "debian-lifecycle.status";
     private static final int MAX_TAIL_BYTES = 64 * 1024;
+    private static final long HEALTH_WAIT_MS = 45_000L;
+    private static final long HEALTH_RETRY_MS = 2_000L;
+    private static final long HEALTH_COMMAND_TIMEOUT_MS = 30_000L;
     private static final Object FILE_LOCK = new Object();
+
+    private static final class HealthOutcome {
+        final boolean successful;
+        final int attempts;
+        final BfuSu.Result result;
+
+        HealthOutcome(boolean successful, int attempts, BfuSu.Result result) {
+            this.successful = successful;
+            this.attempts = attempts;
+            this.result = result;
+        }
+
+        String summary() {
+            if (result == null) return "health_attempts=" + attempts + " health=no_result";
+            return "health_attempts=" + attempts
+                    + " health_exit=" + result.exitCode
+                    + " health_timeout=" + result.timedOut
+                    + " health_output=" + result.output;
+        }
+    }
 
     private DebianLauncher() {}
 
@@ -33,15 +59,14 @@ final class DebianLauncher {
                 "ANDROID_REQUEST operation=" + operation.name().toLowerCase(Locale.US)
                         + " trigger=" + BfuSu.sanitize(trigger));
         writeStatus(context, "RUNNING " + operation.name() + " requested by " + trigger);
+        boolean userUnlockedBefore = isUserUnlocked(context);
 
-        String command = BfuSu.shellQuote(layout.namespaceProbeBinary.getAbsolutePath())
-                + " " + operation.name().toLowerCase(Locale.US)
-                + " " + BfuSu.shellQuote(BfuRootfsProbe.ROOTFS_PATH)
-                + " " + BfuSu.shellQuote(layout.run.getAbsolutePath());
+        String command = lifecycleCommand(layout, operation);
         long timeoutMs;
         if (operation == Operation.START) {
-            command += " " + BfuSu.shellQuote(layout.lifecycleLog.getAbsolutePath());
             timeoutMs = 35_000L;
+        } else if (operation == Operation.RESTART) {
+            timeoutMs = 70_000L;
         } else if (operation == Operation.STOP) {
             timeoutMs = 35_000L;
         } else {
@@ -49,12 +74,35 @@ final class DebianLauncher {
         }
 
         BfuSu.Result result = BfuSu.run(command, timeoutMs);
-        String summary = operation.name() + " command=" + result.command
+        String summary = "command=" + result.command
                 + " exit=" + result.exitCode
                 + " timeout=" + result.timedOut
                 + " output=" + result.output;
-        appendLog(layout.lifecycleLog, "ANDROID_RESULT " + summary);
+        appendLog(layout.lifecycleLog,
+                "ANDROID_RESULT operation=" + operation.name() + " " + summary);
         boolean successful = result.exitedSuccessfully();
+        HealthOutcome health = null;
+        if (successful && (operation == Operation.START
+                || operation == Operation.RESTART)) {
+            health = checkHealth(layout, true);
+            successful = health.successful;
+        } else if (successful && operation == Operation.STATUS) {
+            if (result.output.contains("BFU_DEBIAN_RUNNING")) {
+                health = checkHealth(layout, false);
+                successful = health.successful;
+            } else if (!result.output.contains("BFU_DEBIAN_STOPPED")) {
+                successful = false;
+                appendLog(layout.lifecycleLog,
+                        "ANDROID_HEALTH skipped=state_not_running_or_stopped");
+            }
+        }
+        if (health != null) summary += " " + health.summary();
+        boolean userUnlockedAfter = isUserUnlocked(context);
+        summary = operation.name()
+                + " trigger=" + BfuSu.sanitize(trigger)
+                + " user_unlocked_before=" + userUnlockedBefore
+                + " user_unlocked_after=" + userUnlockedAfter
+                + " " + summary;
         writeStatus(context, (successful ? "SUCCEEDED " : "FAILED ") + summary);
         if (successful) {
             Log.i(TAG, "Debian lifecycle " + summary);
@@ -62,6 +110,49 @@ final class DebianLauncher {
             Log.w(TAG, "Debian lifecycle " + summary);
         }
         return successful;
+    }
+
+    private static String lifecycleCommand(BfuRuntime.Layout layout, Operation operation) {
+        String command = BfuSu.shellQuote(layout.namespaceProbeBinary.getAbsolutePath())
+                + " " + operation.name().toLowerCase(Locale.US)
+                + " " + BfuSu.shellQuote(BfuRootfsProbe.ROOTFS_PATH)
+                + " " + BfuSu.shellQuote(layout.run.getAbsolutePath());
+        if (operation == Operation.START || operation == Operation.RESTART) {
+            command += " " + BfuSu.shellQuote(layout.lifecycleLog.getAbsolutePath());
+        }
+        return command;
+    }
+
+    private static HealthOutcome checkHealth(BfuRuntime.Layout layout,
+                                             boolean waitForReady)
+            throws IOException, InterruptedException {
+        String command = BfuSu.shellQuote(layout.namespaceProbeBinary.getAbsolutePath())
+                + " health " + BfuSu.shellQuote(BfuRootfsProbe.ROOTFS_PATH)
+                + " " + BfuSu.shellQuote(layout.run.getAbsolutePath());
+        long deadline = SystemClock.elapsedRealtime()
+                + (waitForReady ? HEALTH_WAIT_MS : 0L);
+        int attempts = 0;
+        BfuSu.Result result;
+        do {
+            attempts++;
+            result = BfuSu.run(command, HEALTH_COMMAND_TIMEOUT_MS);
+            boolean successful = result.exitedSuccessfully()
+                    && result.output.contains("BFU_DEBIAN_HEALTH")
+                    && result.output.contains("dbus_service=active")
+                    && result.output.contains("dbus_bus=ok")
+                    && result.output.contains("ssh_service=active")
+                    && result.output.contains("listen_22=true");
+            appendLog(layout.lifecycleLog,
+                    "ANDROID_HEALTH attempt=" + attempts
+                            + " exit=" + result.exitCode
+                            + " timeout=" + result.timedOut
+                            + " ready=" + successful
+                            + " output=" + result.output);
+            if (successful) return new HealthOutcome(true, attempts, result);
+            if (!waitForReady || SystemClock.elapsedRealtime() >= deadline) break;
+            Thread.sleep(HEALTH_RETRY_MS);
+        } while (SystemClock.elapsedRealtime() < deadline);
+        return new HealthOutcome(false, attempts, result);
     }
 
     static String readStatus(Context context) throws IOException {
@@ -154,6 +245,13 @@ final class DebianLauncher {
                 "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US);
         format.setTimeZone(TimeZone.getTimeZone("UTC"));
         return format.format(new Date());
+    }
+
+    private static boolean isUserUnlocked(Context context) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return true;
+        UserManager userManager = (UserManager) context.getSystemService(
+                Context.USER_SERVICE);
+        return userManager != null && userManager.isUserUnlocked();
     }
 
     @SuppressWarnings("ResultOfMethodCallIgnored")

@@ -28,6 +28,8 @@ public class BfuBootService extends Service {
             "com.termux.boot.action.CONFIGURE_DEBIAN_SYSTEM";
     static final String ACTION_DEBIAN_START =
             "com.termux.boot.action.START_DEBIAN_SYSTEMD";
+    static final String ACTION_DEBIAN_RESTART =
+            "com.termux.boot.action.RESTART_DEBIAN_SYSTEMD";
     static final String ACTION_DEBIAN_STATUS =
             "com.termux.boot.action.STATUS_DEBIAN_SYSTEMD";
     static final String ACTION_DEBIAN_STOP =
@@ -48,6 +50,12 @@ public class BfuBootService extends Service {
         public void onReceive(Context context, Intent intent) {
             if (Intent.ACTION_USER_UNLOCKED.equals(intent.getAction())) {
                 Log.i(TAG, "USER_UNLOCKED received");
+                try {
+                    BfuOperationLog.append(BfuBootService.this,
+                            "USER_UNLOCKED received; Debian lifecycle unchanged");
+                } catch (IOException e) {
+                    Log.e(TAG, "Failed to persist USER_UNLOCKED event", e);
+                }
                 handOffAfterUnlock();
             }
         }
@@ -142,6 +150,9 @@ public class BfuBootService extends Service {
             case START:
                 action = ACTION_DEBIAN_START;
                 break;
+            case RESTART:
+                action = ACTION_DEBIAN_RESTART;
+                break;
             case STATUS:
                 action = ACTION_DEBIAN_STATUS;
                 break;
@@ -190,6 +201,17 @@ public class BfuBootService extends Service {
 
             if (!rootResult.succeededDuringBfu()) {
                 Log.w(TAG, "Rootfs probe skipped because BFU root was not proven");
+                return;
+            }
+
+            BfuCeIsolationProbe.Result ceIsolationResult =
+                    BfuCeIsolationProbe.run(this);
+            if (ceIsolationResult.succeededDuringBfu()) {
+                Log.i(TAG, "Termux CE isolation proven; "
+                        + ceIsolationResult.summary());
+            } else {
+                Log.e(TAG, "Refusing Debian launch because Termux CE isolation "
+                        + "was not proven; " + ceIsolationResult.summary());
                 return;
             }
             if (layout == null) {
@@ -302,6 +324,7 @@ public class BfuBootService extends Service {
 
     private static DebianLauncher.Operation lifecycleOperation(String action) {
         if (ACTION_DEBIAN_START.equals(action)) return DebianLauncher.Operation.START;
+        if (ACTION_DEBIAN_RESTART.equals(action)) return DebianLauncher.Operation.RESTART;
         if (ACTION_DEBIAN_STATUS.equals(action)) return DebianLauncher.Operation.STATUS;
         if (ACTION_DEBIAN_STOP.equals(action)) return DebianLauncher.Operation.STOP;
         return null;

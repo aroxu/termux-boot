@@ -49,6 +49,12 @@ typedef struct LauncherState {
     uint64_t init_start_ticks;
     uint64_t init_exe_dev;
     uint64_t init_exe_ino;
+    uint64_t init_pid_ns_ino;
+    uint64_t init_mnt_ns_ino;
+    uint64_t init_uts_ns_ino;
+    uint64_t init_ipc_ns_ino;
+    uint64_t init_cgroup_ns_ino;
+    uint64_t init_net_ns_ino;
     int wait_status;
     int64_t updated_epoch;
 } LauncherState;
@@ -63,6 +69,60 @@ static int64_t monotonic_millis(void) {
     struct timespec value;
     if (clock_gettime(CLOCK_MONOTONIC, &value) != 0) return 0;
     return (int64_t) value.tv_sec * 1000 + value.tv_nsec / 1000000;
+}
+
+static void log_file_snapshot(const char *label, const char *path) {
+    char contents[8192];
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        dprintf(STDERR_FILENO,
+                "[%lld] BFU_DEBIAN_DIAGNOSTIC label=%s read_failed errno=%d\n",
+                (long long) realtime_seconds(), label, errno);
+        return;
+    }
+    ssize_t count = read(fd, contents, sizeof(contents) - 1);
+    close(fd);
+    if (count < 0) {
+        dprintf(STDERR_FILENO,
+                "[%lld] BFU_DEBIAN_DIAGNOSTIC label=%s read_failed errno=%d\n",
+                (long long) realtime_seconds(), label, errno);
+        return;
+    }
+    for (ssize_t index = 0; index < count; index++) {
+        if (contents[index] == '\0') contents[index] = ' ';
+    }
+    contents[count] = '\0';
+    dprintf(STDERR_FILENO,
+            "[%lld] BFU_DEBIAN_DIAGNOSTIC_BEGIN label=%s path=%s\n%s%s"
+            "[%lld] BFU_DEBIAN_DIAGNOSTIC_END label=%s\n",
+            (long long) realtime_seconds(), label, path, contents,
+            count > 0 && contents[count - 1] == '\n' ? "" : "\n",
+            (long long) realtime_seconds(), label);
+}
+
+static void log_matching_snapshot(const char *label, const char *path,
+                                  const char *pattern) {
+    FILE *input = fopen(path, "r");
+    if (input == NULL) {
+        dprintf(STDERR_FILENO,
+                "[%lld] BFU_DEBIAN_DIAGNOSTIC label=%s read_failed errno=%d\n",
+                (long long) realtime_seconds(), label, errno);
+        return;
+    }
+    dprintf(STDERR_FILENO,
+            "[%lld] BFU_DEBIAN_DIAGNOSTIC_BEGIN label=%s path=%s filter=%s\n",
+            (long long) realtime_seconds(), label, path, pattern);
+    char line[2048];
+    int emitted = 0;
+    while (emitted < 64 && fgets(line, sizeof(line), input) != NULL) {
+        if (strstr(line, pattern) == NULL) continue;
+        dprintf(STDERR_FILENO, "%s", line);
+        emitted++;
+    }
+    fclose(input);
+    dprintf(STDERR_FILENO,
+            "[%lld] BFU_DEBIAN_DIAGNOSTIC_END label=%s matched_lines=%d\n",
+            (long long) realtime_seconds(), label, emitted);
 }
 
 static void report_failure_text(const char *message) {
@@ -211,6 +271,18 @@ static int validate_rootfs(const char *root, bool require_systemd) {
                 || !is_regular_executable(path)) {
             return fail_message("systemd_init_missing", "missing_/sbin/init", 31);
         }
+        const char *const required_tools[] = {
+                "usr/bin/systemctl", "usr/bin/journalctl", "usr/bin/busctl",
+                "usr/bin/timeout", "usr/bin/ss", "usr/bin/awk"
+        };
+        const size_t tool_count = sizeof(required_tools) / sizeof(required_tools[0]);
+        for (size_t index = 0; index < tool_count; index++) {
+            if (joined_path(path, sizeof(path), root, required_tools[index]) != 0
+                    || !is_regular_executable(path)) {
+                return fail_message("systemd_health_tool_missing",
+                                    "rerun_the_AFU_systemd_provisioner", 31);
+            }
+        }
     }
     return 0;
 }
@@ -292,6 +364,57 @@ static int read_proc_exe_identity(pid_t pid, uint64_t *device, uint64_t *inode) 
     return 0;
 }
 
+static int read_proc_namespace_inode(pid_t pid, const char *name, uint64_t *inode) {
+    char path[96];
+    struct stat value;
+    int count = snprintf(path, sizeof(path), "/proc/%d/ns/%s", pid, name);
+    if (count < 0 || (size_t) count >= sizeof(path)) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    if (stat(path, &value) != 0) return -1;
+    *inode = (uint64_t) value.st_ino;
+    return 0;
+}
+
+static int capture_init_namespace_identity(pid_t pid, LauncherState *state) {
+    return read_proc_namespace_inode(pid, "pid", &state->init_pid_ns_ino) == 0
+            && read_proc_namespace_inode(pid, "mnt", &state->init_mnt_ns_ino) == 0
+            && read_proc_namespace_inode(pid, "uts", &state->init_uts_ns_ino) == 0
+            && read_proc_namespace_inode(pid, "ipc", &state->init_ipc_ns_ino) == 0
+            && read_proc_namespace_inode(pid, "cgroup",
+                                         &state->init_cgroup_ns_ino) == 0
+            && read_proc_namespace_inode(pid, "net", &state->init_net_ns_ino) == 0
+            ? 0 : -1;
+}
+
+static int validate_init_namespace_topology(const LauncherState *state) {
+    uint64_t host_pid = 0;
+    uint64_t host_mnt = 0;
+    uint64_t host_uts = 0;
+    uint64_t host_ipc = 0;
+    uint64_t host_cgroup = 0;
+    uint64_t host_net = 0;
+    if (read_proc_namespace_inode(1, "pid", &host_pid) != 0
+            || read_proc_namespace_inode(1, "mnt", &host_mnt) != 0
+            || read_proc_namespace_inode(1, "uts", &host_uts) != 0
+            || read_proc_namespace_inode(1, "ipc", &host_ipc) != 0
+            || read_proc_namespace_inode(1, "cgroup", &host_cgroup) != 0
+            || read_proc_namespace_inode(1, "net", &host_net) != 0) {
+        return -1;
+    }
+    if (state->init_pid_ns_ino == host_pid
+            || state->init_mnt_ns_ino == host_mnt
+            || state->init_uts_ns_ino == host_uts
+            || state->init_ipc_ns_ino == host_ipc
+            || state->init_cgroup_ns_ino == host_cgroup
+            || state->init_net_ns_ino != host_net) {
+        errno = EXDEV;
+        return -1;
+    }
+    return 0;
+}
+
 static void initialize_state(LauncherState *state, const char *name) {
     memset(state, 0, sizeof(*state));
     snprintf(state->state, sizeof(state->state), "%s", name);
@@ -330,11 +453,15 @@ static int write_state(const char *control_dir, LauncherState *state) {
 
     state->updated_epoch = realtime_seconds();
     count = snprintf(contents, sizeof(contents),
-                     "format=2\nstate=%s\nsupervisor_pid=%d\n"
+                     "format=4\nstate=%s\nsupervisor_pid=%d\n"
                      "supervisor_start_ticks=%llu\nsupervisor_exe_dev=%llu\n"
                      "supervisor_exe_ino=%llu\ninit_host_pid=%d\n"
                      "init_start_ticks=%llu\ninit_exe_dev=%llu\n"
-                     "init_exe_ino=%llu\nwait_status=%d\nupdated_epoch=%lld\n",
+                     "init_exe_ino=%llu\ninit_pid_ns_ino=%llu\n"
+                     "init_mnt_ns_ino=%llu\ninit_uts_ns_ino=%llu\n"
+                     "init_ipc_ns_ino=%llu\ninit_cgroup_ns_ino=%llu\n"
+                     "init_net_ns_ino=%llu\n"
+                     "wait_status=%d\nupdated_epoch=%lld\n",
                      state->state, state->supervisor_pid,
                      (unsigned long long) state->supervisor_start_ticks,
                      (unsigned long long) state->supervisor_exe_dev,
@@ -343,6 +470,12 @@ static int write_state(const char *control_dir, LauncherState *state) {
                      (unsigned long long) state->init_start_ticks,
                      (unsigned long long) state->init_exe_dev,
                      (unsigned long long) state->init_exe_ino,
+                     (unsigned long long) state->init_pid_ns_ino,
+                     (unsigned long long) state->init_mnt_ns_ino,
+                     (unsigned long long) state->init_uts_ns_ino,
+                     (unsigned long long) state->init_ipc_ns_ino,
+                     (unsigned long long) state->init_cgroup_ns_ino,
+                     (unsigned long long) state->init_net_ns_ino,
                      state->wait_status, (long long) state->updated_epoch);
     if (count < 0 || (size_t) count >= sizeof(contents)) {
         errno = EOVERFLOW;
@@ -423,6 +556,18 @@ static int read_state(const char *control_dir, LauncherState *state) {
             (void) parse_u64(value, &state->init_exe_dev);
         } else if (strcmp(line, "init_exe_ino") == 0) {
             (void) parse_u64(value, &state->init_exe_ino);
+        } else if (strcmp(line, "init_pid_ns_ino") == 0) {
+            (void) parse_u64(value, &state->init_pid_ns_ino);
+        } else if (strcmp(line, "init_mnt_ns_ino") == 0) {
+            (void) parse_u64(value, &state->init_mnt_ns_ino);
+        } else if (strcmp(line, "init_uts_ns_ino") == 0) {
+            (void) parse_u64(value, &state->init_uts_ns_ino);
+        } else if (strcmp(line, "init_ipc_ns_ino") == 0) {
+            (void) parse_u64(value, &state->init_ipc_ns_ino);
+        } else if (strcmp(line, "init_cgroup_ns_ino") == 0) {
+            (void) parse_u64(value, &state->init_cgroup_ns_ino);
+        } else if (strcmp(line, "init_net_ns_ino") == 0) {
+            (void) parse_u64(value, &state->init_net_ns_ino);
         } else if (strcmp(line, "wait_status") == 0) {
             state->wait_status = atoi(value);
         } else if (strcmp(line, "updated_epoch") == 0) {
@@ -448,15 +593,42 @@ static bool validate_supervisor_identity(const LauncherState *state) {
 
 static bool validate_init_identity(const LauncherState *state) {
     if (state->init_host_pid <= 1 || state->init_start_ticks == 0
-            || state->init_exe_ino == 0) return false;
+            || state->init_exe_ino == 0 || state->init_pid_ns_ino == 0
+            || state->init_mnt_ns_ino == 0 || state->init_uts_ns_ino == 0
+            || state->init_ipc_ns_ino == 0 || state->init_cgroup_ns_ino == 0
+            || state->init_net_ns_ino == 0) return false;
     uint64_t ticks = 0;
     uint64_t device = 0;
     uint64_t inode = 0;
+    uint64_t pid_ns_inode = 0;
+    uint64_t mnt_ns_inode = 0;
+    uint64_t uts_ns_inode = 0;
+    uint64_t ipc_ns_inode = 0;
+    uint64_t cgroup_ns_inode = 0;
+    uint64_t net_ns_inode = 0;
     return read_proc_start_ticks(state->init_host_pid, &ticks) == 0
             && ticks == state->init_start_ticks
             && read_proc_exe_identity(state->init_host_pid, &device, &inode) == 0
             && device == state->init_exe_dev
             && inode == state->init_exe_ino
+            && read_proc_namespace_inode(state->init_host_pid, "pid",
+                                         &pid_ns_inode) == 0
+            && pid_ns_inode == state->init_pid_ns_ino
+            && read_proc_namespace_inode(state->init_host_pid, "mnt",
+                                         &mnt_ns_inode) == 0
+            && mnt_ns_inode == state->init_mnt_ns_ino
+            && read_proc_namespace_inode(state->init_host_pid, "uts",
+                                         &uts_ns_inode) == 0
+            && uts_ns_inode == state->init_uts_ns_ino
+            && read_proc_namespace_inode(state->init_host_pid, "ipc",
+                                         &ipc_ns_inode) == 0
+            && ipc_ns_inode == state->init_ipc_ns_ino
+            && read_proc_namespace_inode(state->init_host_pid, "cgroup",
+                                         &cgroup_ns_inode) == 0
+            && cgroup_ns_inode == state->init_cgroup_ns_ino
+            && read_proc_namespace_inode(state->init_host_pid, "net",
+                                         &net_ns_inode) == 0
+            && net_ns_inode == state->init_net_ns_ino
             && kill(state->init_host_pid, 0) == 0;
 }
 
@@ -517,6 +689,10 @@ static int prepare_systemd_cgroup_mount(const char *control_dir) {
     }
     result = ensure_directory_path(child_path, 0755, "cgroup_child_dir");
     if (result != 0) return result;
+    dprintf(STDERR_FILENO,
+            "[%lld] BFU_DEBIAN_STAGE cgroup_v1_name_systemd_mounted "
+            "mount=%s child=%s\n",
+            (long long) realtime_seconds(), mount_path, child_path);
     return 0;
 }
 
@@ -542,9 +718,15 @@ static int move_self_to_systemd_cgroup(const char *control_dir) {
         errno = saved_errno;
         return fail_errno("cgroup_move_pid1", 49);
     }
+    dprintf(STDERR_FILENO,
+            "[%lld] BFU_DEBIAN_STAGE init_moved_to_systemd_cgroup path=%s\n",
+            (long long) realtime_seconds(), child_path);
     if (unshare(CLONE_NEWCGROUP) != 0) {
         return fail_errno("unshare_cgroup", 50);
     }
+    dprintf(STDERR_FILENO,
+            "[%lld] BFU_DEBIAN_STAGE cgroup_namespace_private\n",
+            (long long) realtime_seconds());
     return 0;
 }
 
@@ -577,21 +759,43 @@ static int prepare_child_mounts(const char *root, const char *control_dir,
     char path[PATH_MAX];
     int result;
 
+    if (mount(root, root, NULL, MS_BIND | MS_REC, NULL) != 0) {
+        return fail_errno("rootfs_bind", 44);
+    }
+    if (mount(NULL, root, NULL, MS_PRIVATE | MS_REC, NULL) != 0) {
+        return fail_errno("rootfs_make_private", 44);
+    }
+    dprintf(STDERR_FILENO,
+            "[%lld] BFU_DEBIAN_STAGE rootfs_private_bind_mount\n",
+            (long long) realtime_seconds());
+
     if (joined_path(path, sizeof(path), root, "dev") != 0) {
         return fail_errno("dev_path", 44);
     }
     result = bind_recursively("/dev", path, "dev_rbind", "dev_make_rslave");
     if (result != 0) return result;
+    dprintf(STDERR_FILENO, "[%lld] BFU_DEBIAN_STAGE dev_rbind_slave\n",
+            (long long) realtime_seconds());
 
     if (joined_path(path, sizeof(path), root, "sys") != 0) {
         return fail_errno("sys_path", 45);
     }
     result = bind_recursively("/sys", path, "sys_rbind", "sys_make_rslave");
     if (result != 0) return result;
+    if (mount(NULL, path, NULL,
+              MS_BIND | MS_REMOUNT | MS_RDONLY | MS_NOSUID | MS_NODEV | MS_NOEXEC,
+              NULL) != 0) {
+        return fail_errno("sys_read_only", 45);
+    }
+    dprintf(STDERR_FILENO, "[%lld] BFU_DEBIAN_STAGE sys_rbind_slave_read_only\n",
+            (long long) realtime_seconds());
 
     if (systemd_mode) {
         result = mount_systemd_cgroup_view(root, control_dir);
         if (result != 0) return result;
+        dprintf(STDERR_FILENO,
+                "[%lld] BFU_DEBIAN_STAGE private_systemd_cgroup_view_mounted\n",
+                (long long) realtime_seconds());
     }
 
     if (joined_path(path, sizeof(path), root, "proc") != 0) {
@@ -600,11 +804,15 @@ static int prepare_child_mounts(const char *root, const char *control_dir,
     if (mount("proc", path, "proc", MS_NOSUID | MS_NODEV | MS_NOEXEC, NULL) != 0) {
         return fail_errno("proc_mount", 47);
     }
+    dprintf(STDERR_FILENO, "[%lld] BFU_DEBIAN_STAGE private_proc_mounted\n",
+            (long long) realtime_seconds());
     if (joined_path(path, sizeof(path), root, "proc/sys") != 0) {
         return fail_errno("proc_sys_path", 48);
     }
     result = make_bind_read_only(path, "proc_sys_read_only");
     if (result != 0) return result;
+    dprintf(STDERR_FILENO, "[%lld] BFU_DEBIAN_STAGE proc_sys_read_only\n",
+            (long long) realtime_seconds());
 
     if (joined_path(path, sizeof(path), root, "run") != 0) {
         return fail_errno("run_path", 49);
@@ -619,6 +827,8 @@ static int prepare_child_mounts(const char *root, const char *control_dir,
     if (mkdir(path, 0755) != 0 && errno != EEXIST) {
         return fail_errno("run_lock_mkdir", 52);
     }
+    dprintf(STDERR_FILENO, "[%lld] BFU_DEBIAN_STAGE private_run_mounted\n",
+            (long long) realtime_seconds());
     return 0;
 }
 
@@ -627,8 +837,15 @@ static int set_base_private_namespaces(void) {
     if (mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL) != 0) {
         return fail_errno("mount_make_rprivate", 54);
     }
+    dprintf(STDERR_FILENO,
+            "[%lld] BFU_DEBIAN_STAGE mount_namespace_private\n",
+            (long long) realtime_seconds());
     if (unshare(CLONE_NEWUTS) != 0) return fail_errno("unshare_uts", 55);
+    dprintf(STDERR_FILENO, "[%lld] BFU_DEBIAN_STAGE uts_namespace_private\n",
+            (long long) realtime_seconds());
     if (unshare(CLONE_NEWIPC) != 0) return fail_errno("unshare_ipc", 56);
+    dprintf(STDERR_FILENO, "[%lld] BFU_DEBIAN_STAGE ipc_namespace_private\n",
+            (long long) realtime_seconds());
     return 0;
 }
 
@@ -646,6 +863,8 @@ static int set_systemd_parent_namespaces(const char *control_dir) {
     result = prepare_systemd_cgroup_mount(control_dir);
     if (result != 0) return result;
     if (unshare(CLONE_NEWPID) != 0) return fail_errno("unshare_pid", 58);
+    dprintf(STDERR_FILENO, "[%lld] BFU_DEBIAN_STAGE pid_namespace_private\n",
+            (long long) realtime_seconds());
     return 0;
 }
 
@@ -766,6 +985,9 @@ static int enter_debian_systemd(const char *root, const char *control_dir) {
     if (result != 0) return result;
     result = prepare_child_mounts(root, control_dir, true);
     if (result != 0) return result;
+    log_file_snapshot("debian_pid1_cgroup", "/proc/self/cgroup");
+    log_matching_snapshot("debian_cgroup_mounts", "/proc/self/mountinfo",
+                          "cgroup");
     if (syscall(__NR_sethostname, "termux-bfu",
                 strlen("termux-bfu")) != 0) {
         return fail_errno("sethostname", 68);
@@ -844,6 +1066,9 @@ static int supervisor_loop(const char *root, const char *control_dir,
     dprintf(STDERR_FILENO,
             "[%lld] BFU_DEBIAN_STAGE supervisor_started pid=%d root=%s\n",
             (long long) realtime_seconds(), getpid(), root);
+    log_file_snapshot("host_proc_cgroups", "/proc/cgroups");
+    log_file_snapshot("host_self_cgroup", "/proc/self/cgroup");
+    log_matching_snapshot("host_cgroup_mounts", "/proc/self/mountinfo", "cgroup");
 
     struct sigaction action;
     memset(&action, 0, sizeof(action));
@@ -941,15 +1166,18 @@ static int supervisor_loop(const char *root, const char *control_dir,
     }
 
     if (read_proc_exe_identity(init_pid, &state.init_exe_dev,
-                               &state.init_exe_ino) != 0) {
+                               &state.init_exe_ino) != 0
+            || capture_init_namespace_identity(init_pid, &state) != 0
+            || validate_init_namespace_topology(&state) != 0) {
         dprintf(STDERR_FILENO,
-                "[%lld] BFU_DEBIAN_START_FAILED stage=init_identity errno=%d\n",
+                "[%lld] BFU_DEBIAN_START_FAILED stage=init_identity_or_pid_namespace errno=%d\n",
                 (long long) realtime_seconds(), errno);
         kill(init_pid, SIGRTMIN + 3);
         snprintf(state.state, sizeof(state.state), "failed");
         state.wait_status = 82;
         (void) write_state(control_dir, &state);
-        dprintf(ready_fd, "BFU_DEBIAN_START_FAILED stage=init_identity\n");
+        dprintf(ready_fd,
+                "BFU_DEBIAN_START_FAILED stage=init_identity_or_pid_namespace\n");
         return 82;
     }
 
@@ -960,8 +1188,16 @@ static int supervisor_loop(const char *root, const char *control_dir,
                 (long long) realtime_seconds(), errno);
     }
     dprintf(STDERR_FILENO,
-            "[%lld] BFU_DEBIAN_SYSTEMD_STARTED supervisor_pid=%d init_host_pid=%d\n",
-            (long long) realtime_seconds(), getpid(), init_pid);
+            "[%lld] BFU_DEBIAN_SYSTEMD_STARTED supervisor_pid=%d init_host_pid=%d "
+            "namespaces=pid:%llu,mnt:%llu,uts:%llu,ipc:%llu,cgroup:%llu,net:%llu "
+            "network_namespace=android-shared\n",
+            (long long) realtime_seconds(), getpid(), init_pid,
+            (unsigned long long) state.init_pid_ns_ino,
+            (unsigned long long) state.init_mnt_ns_ino,
+            (unsigned long long) state.init_uts_ns_ino,
+            (unsigned long long) state.init_ipc_ns_ino,
+            (unsigned long long) state.init_cgroup_ns_ino,
+            (unsigned long long) state.init_net_ns_ino);
     dprintf(ready_fd,
             "BFU_DEBIAN_STARTED supervisor_pid=%d init_host_pid=%d namespace_pid=1\n",
             getpid(), init_pid);
@@ -1069,14 +1305,252 @@ static int run_status(const char *root, const char *control_dir) {
     bool state_read = read_state(control_dir, &state) == 0;
     bool supervisor_valid = state_read && validate_supervisor_identity(&state);
     bool init_valid = state_read && validate_init_identity(&state);
+    bool topology_valid = init_valid
+            && validate_init_namespace_topology(&state) == 0;
     close(lock_fd);
     printf("BFU_DEBIAN_%s state=%s supervisor_pid=%d init_host_pid=%d "
-           "supervisor_identity_valid=%s init_identity_valid=%s updated_epoch=%lld\n",
-           supervisor_valid && (init_valid || strcmp(state.state, "starting") == 0)
+           "supervisor_identity_valid=%s init_identity_valid=%s "
+           "namespace_topology_valid=%s network_namespace=android-shared "
+           "pid_ns=%llu mnt_ns=%llu uts_ns=%llu ipc_ns=%llu cgroup_ns=%llu "
+           "net_ns=%llu updated_epoch=%lld\n",
+           supervisor_valid && (topology_valid || strcmp(state.state, "starting") == 0)
                    ? "RUNNING" : "STARTING_OR_UNKNOWN",
            state.state, state.supervisor_pid, state.init_host_pid,
            supervisor_valid ? "true" : "false", init_valid ? "true" : "false",
+           topology_valid ? "true" : "false",
+           (unsigned long long) state.init_pid_ns_ino,
+           (unsigned long long) state.init_mnt_ns_ino,
+           (unsigned long long) state.init_uts_ns_ino,
+           (unsigned long long) state.init_ipc_ns_ino,
+           (unsigned long long) state.init_cgroup_ns_ino,
+           (unsigned long long) state.init_net_ns_ino,
            (long long) state.updated_epoch);
+    return 0;
+}
+
+static int enter_debian_health(const char *root) {
+    static const char health_command[] =
+            "set -u; "
+            "pid1=$(/usr/bin/cat /proc/1/comm 2>/dev/null || true); "
+            "pid1_start_ticks=$(/usr/bin/awk '{print $22}' /proc/1/stat "
+            "2>/dev/null || true); "
+            "system_state=$(/usr/bin/timeout -k 1 3 /usr/bin/systemctl "
+            "is-system-running 2>/dev/null || true); "
+            "dbus_service=$(/usr/bin/timeout -k 1 3 /usr/bin/systemctl "
+            "is-active dbus.service 2>/dev/null || true); "
+            "ssh_service=$(/usr/bin/timeout -k 1 3 /usr/bin/systemctl "
+            "is-active ssh.service 2>/dev/null || true); "
+            "default_target=$(/usr/bin/timeout -k 1 3 /usr/bin/systemctl "
+            "get-default 2>/dev/null || true); "
+            "if /usr/bin/timeout -k 1 3 /usr/bin/busctl --system --no-pager list "
+            ">/dev/null 2>&1; then dbus_bus=ok; else dbus_bus=failed; fi; "
+            "listen_22=$(/usr/bin/ss -H -ltn 2>/dev/null | /usr/bin/awk "
+            "'$4 ~ /:22$/ { found=1 } END { if (found) print \"true\"; "
+            "else print \"false\" }'); "
+            "printf 'BFU_DEBIAN_HEALTH pid1=%s pid1_start_ticks=%s "
+            "system_state=%s dbus_service=%s dbus_bus=%s ssh_service=%s "
+            "default_target=%s listen_22=%s\\n' \"$pid1\" \"$pid1_start_ticks\" "
+            "\"$system_state\" \"$dbus_service\" \"$dbus_bus\" "
+            "\"$ssh_service\" \"$default_target\" \"$listen_22\"; "
+            "if [ \"$pid1\" = systemd ] && [ \"$dbus_service\" = active ] "
+            "&& [ \"$dbus_bus\" = ok ] && [ \"$ssh_service\" = active ] "
+            "&& [ \"$default_target\" = multi-user.target ] "
+            "&& [ \"$listen_22\" = true ]; then exit 0; fi; "
+            "printf '%s\\n' BFU_DEBIAN_DIAGNOSTICS_BEGIN; "
+            "/usr/bin/timeout -k 1 3 /usr/bin/systemctl --no-pager --failed "
+            "2>&1 || true; "
+            "printf '%s\\n' BFU_DEBIAN_DIAGNOSTICS_END; exit 1";
+
+    if (chdir(root) != 0) return fail_errno("health_chdir_rootfs", 103);
+    if (chroot(".") != 0) return fail_errno("health_chroot", 104);
+    if (chdir("/") != 0) return fail_errno("health_chdir_chroot", 105);
+    clearenv();
+    setenv("HOME", "/root", 1);
+    setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", 1);
+    setenv("LANG", "C.UTF-8", 1);
+    setenv("container", "termux-bfu", 1);
+    char *const arguments[] = {"sh", "-c", (char *) health_command, NULL};
+    execv("/bin/sh", arguments);
+    return fail_errno("health_exec_shell", 106);
+}
+
+typedef int (*NamespaceChildEntry)(const char *root, const char *argument);
+
+static int enter_debian_health_child(const char *root, const char *argument) {
+    (void) argument;
+    return enter_debian_health(root);
+}
+
+static int enter_debian_systemctl_shutdown(const char *root, const char *mode) {
+    if (strcmp(mode, "poweroff") != 0 && strcmp(mode, "reboot") != 0) {
+        return fail_message("shutdown_test_mode", "only_poweroff_or_reboot_allowed", 108);
+    }
+    if (chdir(root) != 0) return fail_errno("shutdown_test_chdir_rootfs", 108);
+    if (chroot(".") != 0) return fail_errno("shutdown_test_chroot", 108);
+    if (chdir("/") != 0) return fail_errno("shutdown_test_chdir_chroot", 108);
+    clearenv();
+    setenv("HOME", "/root", 1);
+    setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", 1);
+    setenv("LANG", "C.UTF-8", 1);
+    setenv("container", "termux-bfu", 1);
+    char *const arguments[] = {"systemctl", "--no-block", (char *) mode, NULL};
+    execv("/usr/bin/systemctl", arguments);
+    return fail_errno("shutdown_test_exec_systemctl", 108);
+}
+
+static int run_in_debian_namespaces(const char *root, const char *control_dir,
+                                    NamespaceChildEntry entry,
+                                    const char *argument, unsigned int timeout_seconds) {
+    int result = validate_rootfs(root, true);
+    if (result != 0) return result;
+    if (geteuid() != 0) {
+        return fail_message("not_root", "namespace_command_requires_euid_0", 100);
+    }
+    result = validate_control_directory(control_dir);
+    if (result != 0) return result;
+
+    char lock_path[PATH_MAX];
+    int lock_fd = open_lock_file(control_dir, lock_path, sizeof(lock_path));
+    if (lock_fd < 0) return fail_errno("namespace_command_open_lock", 100);
+    if (flock(lock_fd, LOCK_EX | LOCK_NB) == 0) {
+        flock(lock_fd, LOCK_UN);
+        close(lock_fd);
+        return fail_message("namespace_command_not_running",
+                            "supervisor_lock_is_free", 101);
+    }
+    if (errno != EWOULDBLOCK && errno != EAGAIN) {
+        close(lock_fd);
+        return fail_errno("namespace_command_lock", 101);
+    }
+
+    LauncherState state;
+    if (read_state(control_dir, &state) != 0
+            || !validate_supervisor_identity(&state)
+            || !validate_init_identity(&state)
+            || validate_init_namespace_topology(&state) != 0) {
+        close(lock_fd);
+        return fail_message("namespace_command_identity",
+                            "supervisor_init_or_namespace_identity_invalid", 102);
+    }
+
+    char namespace_path[96];
+    int count = snprintf(namespace_path, sizeof(namespace_path), "/proc/%d/ns/mnt",
+                         state.init_host_pid);
+    if (count < 0 || (size_t) count >= sizeof(namespace_path)) {
+        close(lock_fd);
+        errno = ENAMETOOLONG;
+        return fail_errno("namespace_command_mount_path", 102);
+    }
+    int mount_namespace_fd = open(namespace_path, O_RDONLY | O_CLOEXEC);
+    if (mount_namespace_fd < 0) {
+        close(lock_fd);
+        return fail_errno("namespace_command_open_mount", 102);
+    }
+    count = snprintf(namespace_path, sizeof(namespace_path), "/proc/%d/ns/pid",
+                     state.init_host_pid);
+    if (count < 0 || (size_t) count >= sizeof(namespace_path)) {
+        close(mount_namespace_fd);
+        close(lock_fd);
+        errno = ENAMETOOLONG;
+        return fail_errno("namespace_command_pid_path", 102);
+    }
+    int pid_namespace_fd = open(namespace_path, O_RDONLY | O_CLOEXEC);
+    if (pid_namespace_fd < 0) {
+        close(mount_namespace_fd);
+        close(lock_fd);
+        return fail_errno("namespace_command_open_pid", 102);
+    }
+    struct stat mount_namespace_stat;
+    struct stat pid_namespace_stat;
+    if (fstat(mount_namespace_fd, &mount_namespace_stat) != 0
+            || fstat(pid_namespace_fd, &pid_namespace_stat) != 0
+            || (uint64_t) mount_namespace_stat.st_ino != state.init_mnt_ns_ino
+            || (uint64_t) pid_namespace_stat.st_ino != state.init_pid_ns_ino
+            || !validate_init_identity(&state)) {
+        close(pid_namespace_fd);
+        close(mount_namespace_fd);
+        close(lock_fd);
+        return fail_message("namespace_command_race",
+                            "init_identity_changed_before_setns", 102);
+    }
+    close(lock_fd);
+    if (setns(pid_namespace_fd, CLONE_NEWPID) != 0) {
+        close(pid_namespace_fd);
+        close(mount_namespace_fd);
+        return fail_errno("namespace_command_setns_pid", 102);
+    }
+    close(pid_namespace_fd);
+    if (setns(mount_namespace_fd, CLONE_NEWNS) != 0) {
+        close(mount_namespace_fd);
+        return fail_errno("namespace_command_setns_mount", 102);
+    }
+    close(mount_namespace_fd);
+
+    pid_t child_pid = fork();
+    if (child_pid < 0) return fail_errno("namespace_command_fork", 107);
+    if (child_pid == 0) _exit(entry(root, argument));
+    signal(SIGALRM, alarm_handler);
+    alarm_child_pid = child_pid;
+    alarm(timeout_seconds);
+    int wait_status;
+    while (waitpid(child_pid, &wait_status, 0) < 0) {
+        if (errno == EINTR) continue;
+        alarm_child_pid = -1;
+        alarm(0);
+        return fail_errno("namespace_command_wait", 107);
+    }
+    alarm_child_pid = -1;
+    alarm(0);
+    if (WIFEXITED(wait_status)) return WEXITSTATUS(wait_status);
+    if (WIFSIGNALED(wait_status)) {
+        char message[64];
+        snprintf(message, sizeof(message), "child_killed_by_signal_%d",
+                 WTERMSIG(wait_status));
+        return fail_message("namespace_command_signal", message, 107);
+    }
+    return fail_message("namespace_command_wait_status", "unexpected_wait_status", 107);
+}
+
+static int run_health(const char *root, const char *control_dir) {
+    return run_in_debian_namespaces(root, control_dir,
+                                    enter_debian_health_child, NULL, 25);
+}
+
+static int wait_for_supervisor_exit(const char *control_dir) {
+    char lock_path[PATH_MAX];
+    int lock_fd = open_lock_file(control_dir, lock_path, sizeof(lock_path));
+    if (lock_fd < 0) return fail_errno("shutdown_test_open_lock", 109);
+    const int64_t deadline = monotonic_millis() + 45000;
+    while (monotonic_millis() < deadline) {
+        if (flock(lock_fd, LOCK_EX | LOCK_NB) == 0) {
+            flock(lock_fd, LOCK_UN);
+            close(lock_fd);
+            return 0;
+        }
+        if (errno != EWOULDBLOCK && errno != EAGAIN) {
+            close(lock_fd);
+            return fail_errno("shutdown_test_wait_lock", 109);
+        }
+        usleep(200000);
+    }
+    close(lock_fd);
+    return fail_message("shutdown_test_timeout",
+                        "systemd_did_not_release_supervisor_lock", 109);
+}
+
+static int run_shutdown_test(const char *root, const char *control_dir,
+                             const char *mode) {
+    if (strcmp(mode, "poweroff") != 0 && strcmp(mode, "reboot") != 0) {
+        return fail_message("shutdown_test_mode", "only_poweroff_or_reboot_allowed", 108);
+    }
+    printf("BFU_DEBIAN_SHUTDOWN_TEST_REQUESTED mode=%s\n", mode);
+    int command_result = run_in_debian_namespaces(root, control_dir,
+                                                  enter_debian_systemctl_shutdown,
+                                                  mode, 15);
+    int stop_result = wait_for_supervisor_exit(control_dir);
+    if (stop_result != 0) return command_result != 0 ? command_result : stop_result;
+    printf("BFU_DEBIAN_SHUTDOWN_TEST_COMPLETED mode=%s command_result=%d "
+           "android_reboot_not_assessed\n", mode, command_result);
     return 0;
 }
 
@@ -1233,14 +1707,24 @@ static int run_stop(const char *root, const char *control_dir) {
     return fail_message("stop_timeout", "supervisor_did_not_release_lock", 99);
 }
 
+static int run_restart(const char *root, const char *control_dir,
+                       const char *log_path) {
+    int result = run_stop(root, control_dir);
+    if (result != 0) return result;
+    return run_start(root, control_dir, log_path);
+}
+
 static void usage(const char *program) {
     fprintf(stderr,
             "usage:\n"
             "  %s probe /data/local/debian\n"
             "  %s start /data/local/debian CONTROL_DIR LIFECYCLE_LOG\n"
             "  %s status /data/local/debian CONTROL_DIR\n"
-            "  %s stop /data/local/debian CONTROL_DIR\n",
-            program, program, program, program);
+            "  %s health /data/local/debian CONTROL_DIR\n"
+            "  %s stop /data/local/debian CONTROL_DIR\n"
+            "  %s restart /data/local/debian CONTROL_DIR LIFECYCLE_LOG\n"
+            "  %s shutdown-test /data/local/debian CONTROL_DIR poweroff|reboot\n",
+            program, program, program, program, program, program, program);
 }
 
 int main(int argc, char **argv) {
@@ -1253,8 +1737,17 @@ int main(int argc, char **argv) {
     if (argc == 4 && strcmp(argv[1], "status") == 0) {
         return run_status(argv[2], argv[3]);
     }
+    if (argc == 4 && strcmp(argv[1], "health") == 0) {
+        return run_health(argv[2], argv[3]);
+    }
     if (argc == 4 && strcmp(argv[1], "stop") == 0) {
         return run_stop(argv[2], argv[3]);
+    }
+    if (argc == 5 && strcmp(argv[1], "restart") == 0) {
+        return run_restart(argv[2], argv[3], argv[4]);
+    }
+    if (argc == 5 && strcmp(argv[1], "shutdown-test") == 0) {
+        return run_shutdown_test(argv[2], argv[3], argv[4]);
     }
     usage(argv[0]);
     return 2;

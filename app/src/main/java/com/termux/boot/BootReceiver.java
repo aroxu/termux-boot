@@ -30,6 +30,7 @@ public class BootReceiver extends BroadcastReceiver {
         if (Intent.ACTION_LOCKED_BOOT_COMPLETED.equals(action)) {
             Log.i(TAG, "LOCKED_BOOT_COMPLETED received");
             appendLockedBootMarker(context);
+            recordPersistentEvent(context, "LOCKED_BOOT_COMPLETED received");
             if (BfuPreferences.isEnabled(context)) {
                 startBfuEnvironment(context);
             } else {
@@ -81,18 +82,24 @@ public class BootReceiver extends BroadcastReceiver {
     static void startNormalTermuxBoot(Context context) {
         if (!isUserUnlocked(context)) {
             Log.w(TAG, "Refusing to access Termux CE storage while user is locked");
+            recordPersistentEvent(context,
+                    "NORMAL_BOOT_HANDOFF_REJECTED user_unlocked=false");
             return;
         }
         if (!BfuPreferences.shouldStartNormalBoot(context)) {
             Log.i(TAG, "Normal Termux:Boot handoff is disabled");
+            recordPersistentEvent(context, "NORMAL_BOOT_HANDOFF_DISABLED");
             return;
         }
         if (!BfuPreferences.tryMarkNormalBootDispatch(context)) {
-            Log.i(TAG, "Normal Termux:Boot handoff already dispatched recently");
+            Log.i(TAG, "Normal Termux:Boot handoff already dispatched this Android boot");
+            recordPersistentEvent(context,
+                    "NORMAL_BOOT_HANDOFF_DUPLICATE_SUPPRESSED same_android_boot=true");
             return;
         }
 
         Log.i(TAG, "Termux Boot handoff started");
+        recordPersistentEvent(context, "NORMAL_BOOT_HANDOFF_STARTED user_unlocked=true");
         scheduleNormalBootScripts(context);
     }
 
@@ -100,6 +107,14 @@ public class BootReceiver extends BroadcastReceiver {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return true;
         UserManager userManager = (UserManager) context.getSystemService(Context.USER_SERVICE);
         return userManager != null && userManager.isUserUnlocked();
+    }
+
+    private static void recordPersistentEvent(Context context, String message) {
+        try {
+            BfuOperationLog.append(context, message);
+        } catch (IOException e) {
+            Log.e(TAG, "Failed to append persistent BFU event", e);
+        }
     }
 
     private static void scheduleNormalBootScripts(Context context) {

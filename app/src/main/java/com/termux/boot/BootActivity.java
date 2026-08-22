@@ -42,6 +42,7 @@ public class BootActivity extends Activity {
     private CheckBox startNormalBoot;
     private EditText authorizedKeys;
     private TextView rootProbeStatus;
+    private TextView ceIsolationProbeStatus;
     private TextView rootfsProbeStatus;
     private TextView debianRuntimeProbeStatus;
     private Button rootAuthorizationButton;
@@ -157,6 +158,9 @@ public class BootActivity extends Activity {
         rootProbeStatus = createLogConsole(3, 8);
         addLogConsole(content, rootProbeStatus, dp(8));
 
+        ceIsolationProbeStatus = createLogConsole(3, 8);
+        addLogConsole(content, ceIsolationProbeStatus, dp(8));
+
         rootfsProbeStatus = createLogConsole(3, 8);
         addLogConsole(content, rootfsProbeStatus, dp(8));
 
@@ -241,6 +245,11 @@ public class BootActivity extends Activity {
                 DebianLauncher.Operation.START));
         content.addView(startDebian, matchWrap());
 
+        Button restartDebian = new Button(this);
+        restartDebian.setText(R.string.bfu_restart_debian);
+        restartDebian.setOnClickListener(view -> confirmRestartDebian());
+        content.addView(restartDebian, matchWrap());
+
         Button statusDebian = new Button(this);
         statusDebian.setText(R.string.bfu_status_debian);
         statusDebian.setOnClickListener(view -> requestLifecycle(
@@ -307,6 +316,21 @@ public class BootActivity extends Activity {
             replaceConsoleText(rootProbeStatus, rootResult, false);
         }
 
+        String ceIsolationResult;
+        try {
+            ceIsolationResult = BfuCeIsolationProbe.readLastPersistentResult(this);
+            if (ceIsolationResult.isEmpty()) {
+                ceIsolationResult = getString(R.string.bfu_ce_isolation_probe_none);
+            }
+            replaceConsoleText(ceIsolationProbeStatus,
+                    getString(R.string.bfu_ce_isolation_probe_status,
+                            ceIsolationResult), false);
+        } catch (IOException e) {
+            ceIsolationResult = getString(
+                    R.string.bfu_ce_isolation_probe_read_failed, e.getMessage());
+            replaceConsoleText(ceIsolationProbeStatus, ceIsolationResult, false);
+        }
+
         String rootfsResult;
         try {
             rootfsResult = BfuRootfsProbe.readLastPersistentResult(this);
@@ -334,6 +358,7 @@ public class BootActivity extends Activity {
 
         if (recordOperation) {
             recordOperation("PROBE_RESULTS_REFRESHED root={" + oneLine(rootResult)
+                    + "} ce_isolation={" + oneLine(ceIsolationResult)
                     + "} rootfs={" + oneLine(rootfsResult)
                     + "} runtime={" + oneLine(runtimeResult) + "}");
         }
@@ -564,8 +589,12 @@ public class BootActivity extends Activity {
     }
 
     private void requestLifecycle(DebianLauncher.Operation operation) {
-        if (operation == DebianLauncher.Operation.START && !enableBfu.isChecked()) {
-            recordOperation("DEBIAN_LIFECYCLE_REJECTED operation=start bfu_disabled=true");
+        if ((operation == DebianLauncher.Operation.START
+                || operation == DebianLauncher.Operation.RESTART)
+                && !enableBfu.isChecked()) {
+            recordOperation("DEBIAN_LIFECYCLE_REJECTED operation="
+                    + operation.name().toLowerCase(java.util.Locale.US)
+                    + " bfu_disabled=true");
             Toast.makeText(this, R.string.bfu_install_requires_enabled,
                     Toast.LENGTH_LONG).show();
             return;
@@ -596,6 +625,17 @@ public class BootActivity extends Activity {
                 .setPositiveButton(R.string.bfu_stop_confirm_button,
                         (dialog, which) -> requestLifecycle(
                                 DebianLauncher.Operation.STOP))
+                .show();
+    }
+
+    private void confirmRestartDebian() {
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.bfu_restart_confirm_title)
+                .setMessage(R.string.bfu_restart_confirm_message)
+                .setNegativeButton(android.R.string.cancel, null)
+                .setPositiveButton(R.string.bfu_restart_confirm_button,
+                        (dialog, which) -> requestLifecycle(
+                                DebianLauncher.Operation.RESTART))
                 .show();
     }
 
