@@ -4,6 +4,22 @@
     <string name="bfu_settings_explanation">BFU mode uses device-protected storage before the first unlock. Magisk root is verified; the current milestone probes /data/local/debian storage access for a future systemd launcher. Never place passwords, tokens, or other credentials in BFU storage.</string>
     <string name="bfu_enable">Enable Direct Boot Debian bootstrap</string>
     <string name="bfu_start_normal_boot">Start normal Termux:Boot after unlock</string>
+    <string name="bfu_root_authorization_explanation">Debian boot requires Magisk root on every cold boot. Authorize this shared UID while Android is unlocked, and choose Magisk’s permanent/forever option so no approval UI is needed during BFU.</string>
+    <string name="bfu_request_root_authorization">Request / verify Magisk root permission</string>
+    <string name="bfu_root_authorization_status">Last AFU root authorization check (not BFU proof):\n%1$s</string>
+    <string name="bfu_root_authorization_none">No interactive root authorization check has been recorded.</string>
+    <string name="bfu_root_authorization_read_failed">Failed to read root authorization result: %1$s</string>
+    <string name="bfu_root_authorization_requires_unlock">Unlock Android first so Magisk can show its authorization UI.</string>
+    <string name="bfu_root_authorization_confirm_title">Authorize the shared Termux UID?</string>
+    <string name="bfu_root_authorization_confirm_message">Magisk stores root policy by Linux UID. Granting UID %1$s therefore grants root to all installed packages sharing it:\n\n%2$s\n\nContinue only if every listed app is trusted. In Magisk, select the permanent/forever duration; a one-time grant will not work after a cold reboot.</string>
+    <string name="bfu_root_authorization_confirm_button">Request root</string>
+    <string name="bfu_root_authorization_waiting">Waiting for Magisk authorization. Approve the request with the permanent/forever duration…</string>
+    <string name="bfu_root_authorization_interrupted">Root authorization request was interrupted.</string>
+    <string name="bfu_root_authorization_unknown_failure">Unknown root authorization failure.</string>
+    <string name="bfu_root_authorization_verified_title">Root works for this UID</string>
+    <string name="bfu_root_authorization_verified_message">UID %1$s successfully executed as uid=0. This proves root works now, but the app cannot determine whether Magisk saved a permanent policy. Confirm “Allow” with permanent/forever duration in Magisk before the BFU reboot test.</string>
+    <string name="bfu_root_authorization_failed_title">Root was not authorized</string>
+    <string name="bfu_root_authorization_failed_message">Magisk did not return uid=0. Check that Magisk root access is enabled for apps, then retry.\n\nResult: %1$s</string>
     <string name="bfu_refresh_probe_status">Refresh BFU probe results</string>
     <string name="bfu_root_probe_status">Last BFU root probe:\n%1$s</string>
     <string name="bfu_root_probe_none">No root probe has been recorded yet.</string>

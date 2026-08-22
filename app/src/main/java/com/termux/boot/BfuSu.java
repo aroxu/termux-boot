@@ -122,6 +122,10 @@ final class BfuSu {
         return sanitized.isEmpty() ? "(none)" : sanitized;
     }
 
+    static boolean containsRootUid(String output) {
+        return output != null && output.matches("(?s).*(^|\\s)uid=0(?:\\(|\\s|$).*");
+    }
+
     private static Result runCandidate(String command, String shellCommand, long timeoutMs)
             throws IOException, InterruptedException {
         ProcessBuilder builder = new ProcessBuilder(command, "-c", shellCommand);

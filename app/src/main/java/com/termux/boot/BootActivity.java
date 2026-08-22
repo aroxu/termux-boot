@@ -2,10 +2,12 @@ package com.termux.boot;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.Context;
 import android.os.Bundle;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.Process;
 import android.os.UserManager;
 import android.graphics.Typeface;
 import android.text.method.ScrollingMovementMethod;
@@ -20,6 +22,9 @@ import android.widget.Toast;
 import androidx.annotation.Nullable;
 
 import java.io.IOException;
+import java.util.Arrays;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class BootActivity extends Activity {
 
@@ -27,14 +32,23 @@ public class BootActivity extends Activity {
     private CheckBox startNormalBoot;
     private TextView rootProbeStatus;
     private TextView rootfsProbeStatus;
+    private Button rootAuthorizationButton;
+    private TextView rootAuthorizationStatus;
     private TextView installStatus;
     private TextView installLog;
     private Handler liveLogHandler;
+    private final ExecutorService rootAuthorizationExecutor =
+            Executors.newSingleThreadExecutor();
+    private volatile boolean rootAuthorizationInProgress;
+    private boolean activityResumed;
+    private BfuRootAuthorization.Result pendingRootAuthorizationResult;
+    private String pendingRootAuthorizationFailure;
     private String lastDisplayedInstallLog = "";
 
     private final Runnable refreshLiveLog = new Runnable() {
         @Override
         public void run() {
+            refreshRootAuthorizationStatus();
             refreshInstallerStatus();
             liveLogHandler.postDelayed(this, 1_000L);
         }
@@ -52,14 +66,23 @@ public class BootActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        activityResumed = true;
         liveLogHandler.removeCallbacks(refreshLiveLog);
         liveLogHandler.post(refreshLiveLog);
+        showPendingRootAuthorizationResult();
     }
 
     @Override
     protected void onPause() {
+        activityResumed = false;
         liveLogHandler.removeCallbacks(refreshLiveLog);
         super.onPause();
+    }
+
+    @Override
+    protected void onDestroy() {
+        rootAuthorizationExecutor.shutdownNow();
+        super.onDestroy();
     }
 
     private ScrollView buildSettingsView() {
@@ -79,6 +102,18 @@ public class BootActivity extends Activity {
         startNormalBoot = new CheckBox(this);
         startNormalBoot.setText(R.string.bfu_start_normal_boot);
         content.addView(startNormalBoot, matchWrap());
+
+        TextView rootAuthorizationExplanation = new TextView(this);
+        rootAuthorizationExplanation.setText(R.string.bfu_root_authorization_explanation);
+        content.addView(rootAuthorizationExplanation, matchWrap());
+
+        rootAuthorizationStatus = new TextView(this);
+        content.addView(rootAuthorizationStatus, matchWrap());
+
+        rootAuthorizationButton = new Button(this);
+        rootAuthorizationButton.setText(R.string.bfu_request_root_authorization);
+        rootAuthorizationButton.setOnClickListener(view -> confirmRootAuthorization());
+        content.addView(rootAuthorizationButton, matchWrap());
 
         rootProbeStatus = new TextView(this);
         content.addView(rootProbeStatus, matchWrap());
@@ -131,6 +166,7 @@ public class BootActivity extends Activity {
     private void loadSettings() {
         enableBfu.setChecked(BfuPreferences.isEnabled(this));
         startNormalBoot.setChecked(BfuPreferences.shouldStartNormalBoot(this));
+        refreshRootAuthorizationStatus();
         refreshProbeStatus();
         refreshInstallerStatus();
     }
@@ -165,6 +201,115 @@ public class BootActivity extends Activity {
             Toast.makeText(this, getString(R.string.bfu_provision_failed, e.getMessage()),
                     Toast.LENGTH_LONG).show();
         }
+    }
+
+    private void confirmRootAuthorization() {
+        if (!isUserUnlocked()) {
+            Toast.makeText(this, R.string.bfu_root_authorization_requires_unlock,
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        int uid = Process.myUid();
+        String packages = packagesForSharedUid(uid);
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.bfu_root_authorization_confirm_title)
+                .setMessage(getString(R.string.bfu_root_authorization_confirm_message,
+                        Integer.toString(uid), packages))
+                .setNegativeButton(android.R.string.cancel, null)
+                .setPositiveButton(R.string.bfu_root_authorization_confirm_button,
+                        (dialog, which) -> requestRootAuthorization())
+                .show();
+    }
+
+    private void requestRootAuthorization() {
+        if (rootAuthorizationInProgress) return;
+        rootAuthorizationInProgress = true;
+        rootAuthorizationButton.setEnabled(false);
+        rootAuthorizationStatus.setText(R.string.bfu_root_authorization_waiting);
+        Context applicationContext = getApplicationContext();
+
+        rootAuthorizationExecutor.execute(() -> {
+            BfuRootAuthorization.Result result = null;
+            String failure = null;
+            try {
+                result = BfuRootAuthorization.request(applicationContext);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                failure = applicationContext.getString(
+                        R.string.bfu_root_authorization_interrupted);
+            } catch (IOException | IllegalStateException e) {
+                failure = BfuSu.sanitize(e.getMessage());
+            }
+
+            BfuRootAuthorization.Result completedResult = result;
+            String completedFailure = failure;
+            liveLogHandler.post(() -> finishRootAuthorization(
+                    completedResult, completedFailure));
+        });
+    }
+
+    private void finishRootAuthorization(BfuRootAuthorization.Result result, String failure) {
+        if (isFinishing() || isDestroyed()) return;
+        rootAuthorizationInProgress = false;
+        rootAuthorizationButton.setEnabled(true);
+        refreshRootAuthorizationStatus();
+
+        pendingRootAuthorizationResult = result;
+        pendingRootAuthorizationFailure = failure;
+        if (activityResumed) showPendingRootAuthorizationResult();
+    }
+
+    private void showPendingRootAuthorizationResult() {
+        BfuRootAuthorization.Result result = pendingRootAuthorizationResult;
+        String failure = pendingRootAuthorizationFailure;
+        if (result == null && failure == null) return;
+        pendingRootAuthorizationResult = null;
+        pendingRootAuthorizationFailure = null;
+
+        if (result != null && result.authorizedWhileUnlocked()) {
+            new AlertDialog.Builder(this)
+                    .setTitle(R.string.bfu_root_authorization_verified_title)
+                    .setMessage(getString(R.string.bfu_root_authorization_verified_message,
+                            Integer.toString(result.appUid)))
+                    .setPositiveButton(android.R.string.ok, null)
+                    .show();
+            return;
+        }
+
+        String reason = failure;
+        if (reason == null && result != null) reason = result.summary();
+        if (reason == null) reason = getString(R.string.bfu_root_authorization_unknown_failure);
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.bfu_root_authorization_failed_title)
+                .setMessage(getString(R.string.bfu_root_authorization_failed_message, reason))
+                .setPositiveButton(android.R.string.ok, null)
+                .show();
+    }
+
+    private void refreshRootAuthorizationStatus() {
+        if (rootAuthorizationStatus == null || rootAuthorizationInProgress) return;
+        try {
+            String result = BfuRootAuthorization.readLastPersistentResult(this);
+            if (result.isEmpty()) result = getString(R.string.bfu_root_authorization_none);
+            rootAuthorizationStatus.setText(getString(
+                    R.string.bfu_root_authorization_status, result));
+        } catch (IOException e) {
+            rootAuthorizationStatus.setText(getString(
+                    R.string.bfu_root_authorization_read_failed, e.getMessage()));
+        }
+    }
+
+    private String packagesForSharedUid(int uid) {
+        String[] packages = getPackageManager().getPackagesForUid(uid);
+        if (packages == null || packages.length == 0) return getPackageName();
+        Arrays.sort(packages);
+        StringBuilder result = new StringBuilder();
+        for (String packageName : packages) {
+            if (result.length() > 0) result.append("\n");
+            result.append("• ").append(packageName);
+        }
+        return result.toString();
     }
 
     private void confirmDebianInstall() {
