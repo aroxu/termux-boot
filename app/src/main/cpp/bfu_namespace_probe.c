@@ -1283,7 +1283,7 @@ static int run_status(const char *root, const char *control_dir) {
     if (lock_fd < 0) return fail_errno("open_lock", 82);
 
     if (flock(lock_fd, LOCK_EX | LOCK_NB) == 0) {
-        LauncherState stale;
+        LauncherState stale = {0};
         int has_state = read_state(control_dir, &stale) == 0;
         bool orphaned_init = has_state && validate_init_identity(&stale);
         flock(lock_fd, LOCK_UN);
@@ -1304,7 +1304,7 @@ static int run_status(const char *root, const char *control_dir) {
         return fail_errno("lock_status", 83);
     }
 
-    LauncherState state;
+    LauncherState state = {0};
     bool state_read = read_state(control_dir, &state) == 0;
     bool supervisor_valid = state_read && validate_supervisor_identity(&state);
     bool init_valid = state_read && validate_init_identity(&state);
@@ -1349,6 +1349,8 @@ static int enter_debian_health(const char *root) {
             "boot_proof_marker=present; else boot_proof_marker=missing; fi; "
             "default_target=$(/usr/bin/timeout -k 1 3 /usr/bin/systemctl "
             "get-default 2>/dev/null || true); "
+            "target_state=$(/usr/bin/timeout -k 1 3 /usr/bin/systemctl "
+            "is-active multi-user.target 2>/dev/null || true); "
             "if /usr/bin/timeout -k 1 3 /usr/bin/busctl --system --no-pager list "
             ">/dev/null 2>&1; then dbus_bus=ok; else dbus_bus=failed; fi; "
             "listen_22=$(/usr/bin/ss -H -ltn 2>/dev/null | /usr/bin/awk "
@@ -1357,15 +1359,17 @@ static int enter_debian_health(const char *root) {
             "printf 'BFU_DEBIAN_HEALTH pid1=%s pid1_start_ticks=%s "
             "system_state=%s dbus_service=%s dbus_bus=%s ssh_service=%s "
             "boot_proof_service=%s boot_proof_marker=%s "
-            "default_target=%s listen_22=%s\\n' \"$pid1\" \"$pid1_start_ticks\" "
+            "default_target=%s target_state=%s listen_22=%s\\n' "
+            "\"$pid1\" \"$pid1_start_ticks\" "
             "\"$system_state\" \"$dbus_service\" \"$dbus_bus\" "
             "\"$ssh_service\" \"$boot_proof_service\" \"$boot_proof_marker\" "
-            "\"$default_target\" \"$listen_22\"; "
+            "\"$default_target\" \"$target_state\" \"$listen_22\"; "
             "if [ \"$pid1\" = systemd ] && [ \"$dbus_service\" = active ] "
             "&& [ \"$dbus_bus\" = ok ] && [ \"$ssh_service\" = active ] "
             "&& [ \"$boot_proof_service\" = active ] "
             "&& [ \"$boot_proof_marker\" = present ] "
             "&& [ \"$default_target\" = multi-user.target ] "
+            "&& [ \"$target_state\" = active ] "
             "&& [ \"$listen_22\" = true ]; then exit 0; fi; "
             "printf '%s\\n' BFU_DEBIAN_DIAGNOSTICS_BEGIN; "
             "/usr/bin/timeout -k 1 3 /usr/bin/systemctl --no-pager --failed "
@@ -1443,7 +1447,7 @@ static int run_in_debian_namespaces(const char *root, const char *control_dir,
         return fail_errno("namespace_command_lock", 101);
     }
 
-    LauncherState state;
+    LauncherState state = {0};
     if (read_state(control_dir, &state) != 0
             || !validate_supervisor_identity(&state)
             || !validate_init_identity(&state)
@@ -1600,7 +1604,7 @@ static int run_start(const char *root, const char *control_dir,
     if (lock_fd < 0) return fail_errno("open_lock", 86);
     if (flock(lock_fd, LOCK_EX | LOCK_NB) != 0) {
         if (errno == EWOULDBLOCK || errno == EAGAIN) {
-            LauncherState state;
+            LauncherState state = {0};
             bool valid = read_state(control_dir, &state) == 0
                     && validate_supervisor_identity(&state);
             close(lock_fd);
@@ -1614,7 +1618,7 @@ static int run_start(const char *root, const char *control_dir,
         return fail_errno("lock_start", 88);
     }
 
-    LauncherState stale;
+    LauncherState stale = {0};
     if (read_state(control_dir, &stale) == 0 && validate_init_identity(&stale)) {
         flock(lock_fd, LOCK_UN);
         close(lock_fd);
@@ -1667,7 +1671,7 @@ static int run_stop(const char *root, const char *control_dir) {
     int lock_fd = open_lock_file(control_dir, lock_path, sizeof(lock_path));
     if (lock_fd < 0) return fail_errno("open_lock", 94);
     if (flock(lock_fd, LOCK_EX | LOCK_NB) == 0) {
-        LauncherState orphan;
+        LauncherState orphan = {0};
         bool orphaned_init = read_state(control_dir, &orphan) == 0
                 && validate_init_identity(&orphan);
         flock(lock_fd, LOCK_UN);
@@ -1699,7 +1703,7 @@ static int run_stop(const char *root, const char *control_dir) {
         return fail_errno("lock_stop", 95);
     }
 
-    LauncherState state;
+    LauncherState state = {0};
     if (read_state(control_dir, &state) != 0
             || !validate_supervisor_identity(&state)) {
         close(lock_fd);
