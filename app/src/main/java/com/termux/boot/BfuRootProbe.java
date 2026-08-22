@@ -3,6 +3,7 @@ package com.termux.boot;
 import android.content.Context;
 import android.os.Build;
 import android.os.SystemClock;
+import android.os.UserManager;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -31,13 +32,18 @@ final class BfuRootProbe {
         final String command;
         final int exitCode;
         final boolean timedOut;
+        final boolean userUnlockedBefore;
+        final boolean userUnlockedAfter;
         final String output;
 
-        Result(boolean root, String command, int exitCode, boolean timedOut, String output) {
+        Result(boolean root, String command, int exitCode, boolean timedOut,
+               boolean userUnlockedBefore, boolean userUnlockedAfter, String output) {
             this.root = root;
             this.command = command;
             this.exitCode = exitCode;
             this.timedOut = timedOut;
+            this.userUnlockedBefore = userUnlockedBefore;
+            this.userUnlockedAfter = userUnlockedAfter;
             this.output = output;
         }
 
@@ -46,6 +52,8 @@ final class BfuRootProbe {
                     + " exit=" + exitCode
                     + " timeout=" + timedOut
                     + " root=" + root
+                    + " user_unlocked_before=" + userUnlockedBefore
+                    + " user_unlocked_after=" + userUnlockedAfter
                     + " output=" + output;
         }
     }
@@ -54,7 +62,12 @@ final class BfuRootProbe {
 
     static Result run(Context context) throws IOException, InterruptedException {
         Context deContext = BfuPreferences.deviceProtectedContext(context);
-        Result result = findAndRunSu();
+        boolean userUnlockedBefore = isUserUnlocked(context);
+        Result commandResult = findAndRunSu();
+        boolean userUnlockedAfter = isUserUnlocked(context);
+        Result result = new Result(commandResult.root, commandResult.command,
+                commandResult.exitCode, commandResult.timedOut, userUnlockedBefore,
+                userUnlockedAfter, commandResult.output);
         appendPersistentResult(deContext, result);
         return result;
     }
@@ -76,7 +89,8 @@ final class BfuRootProbe {
         }
 
         String output = failures.length() == 0 ? "no executable su found" : failures.toString();
-        return new Result(false, "none", EXIT_NOT_STARTED, false, output);
+        return new Result(false, "none", EXIT_NOT_STARTED, false,
+                false, false, output);
     }
 
     private static Result runSu(String command) throws IOException, InterruptedException {
@@ -100,7 +114,8 @@ final class BfuRootProbe {
         String output = exitCode == null ? "process did not terminate" : readOutput(process);
         int resolvedExitCode = timedOut ? EXIT_TIMEOUT : exitCode;
         boolean root = !timedOut && resolvedExitCode == 0 && containsRootUid(output);
-        return new Result(root, command, resolvedExitCode, timedOut, sanitize(output));
+        return new Result(root, command, resolvedExitCode, timedOut,
+                false, false, sanitize(output));
     }
 
     private static Integer terminate(Process process) throws InterruptedException {
@@ -146,6 +161,12 @@ final class BfuRootProbe {
 
     private static boolean containsRootUid(String output) {
         return output.matches("(?s).*(^|\\s)uid=0(?:\\(|\\s|$).*");
+    }
+
+    private static boolean isUserUnlocked(Context context) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return true;
+        UserManager userManager = (UserManager) context.getSystemService(Context.USER_SERVICE);
+        return userManager != null && userManager.isUserUnlocked();
     }
 
     private static void appendPersistentResult(Context deContext, Result result)
