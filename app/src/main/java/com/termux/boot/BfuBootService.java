@@ -81,10 +81,11 @@ public class BfuBootService extends Service {
     }
 
     private void runBfuStartupChecks() {
+        BfuRuntime.Layout layout = null;
         try {
             Context deContext = BfuPreferences.deviceProtectedContext(this);
             Log.i(TAG, "DE context initialized: " + deContext.getFilesDir());
-            BfuRuntime.Layout layout = BfuRuntime.provision(deContext);
+            layout = BfuRuntime.provision(deContext);
             Log.i(TAG, "BFU runtime verified: " + layout.root);
             String output = BfuRuntime.executeDirectBootProbe(layout);
             Log.i(TAG, "DE executable probe succeeded: " + output);
@@ -97,17 +98,33 @@ public class BfuBootService extends Service {
         }
 
         try {
-            BfuRootProbe.Result result = BfuRootProbe.run(this);
-            if (result.root) {
-                Log.i(TAG, "root probe: uid=0; " + result.summary());
+            BfuRootProbe.Result rootResult = BfuRootProbe.run(this);
+            if (rootResult.root) {
+                Log.i(TAG, "root probe: uid=0; " + rootResult.summary());
             } else {
-                Log.w(TAG, "root probe failed; " + result.summary());
+                Log.w(TAG, "root probe failed; " + rootResult.summary());
+            }
+
+            if (!rootResult.succeededDuringBfu()) {
+                Log.w(TAG, "Rootfs probe skipped because BFU root was not proven");
+                return;
+            }
+            if (layout == null) {
+                Log.w(TAG, "Rootfs probe skipped because BFU runtime was not provisioned");
+                return;
+            }
+
+            BfuRootfsProbe.Result rootfsResult = BfuRootfsProbe.run(this, layout);
+            if (rootfsResult.succeededDuringBfu()) {
+                Log.i(TAG, "Debian rootfs accessible; " + rootfsResult.summary());
+            } else {
+                Log.w(TAG, "Debian rootfs probe failed; " + rootfsResult.summary());
             }
         } catch (IOException e) {
-            Log.e(TAG, "Root probe or DE root log write failed", e);
+            Log.e(TAG, "Root/rootfs probe or DE log write failed", e);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            Log.w(TAG, "Root probe interrupted");
+            Log.w(TAG, "Root or rootfs probe interrupted");
         }
     }
 

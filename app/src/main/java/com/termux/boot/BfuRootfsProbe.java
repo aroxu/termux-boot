@@ -12,12 +12,17 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 
-final class BfuRootProbe {
+final class BfuRootfsProbe {
+
+    static final String ROOTFS_PATH = "/data/local/debian";
 
     private static final long PROBE_TIMEOUT_MS = 15_000L;
+    private static final String SUCCESS_MARKER =
+            "Debian-rootfs-access-ok root=" + ROOTFS_PATH;
 
     static final class Result {
-        final boolean root;
+        final boolean accessible;
+        final String rootfs;
         final String command;
         final int exitCode;
         final boolean timedOut;
@@ -25,9 +30,10 @@ final class BfuRootProbe {
         final boolean userUnlockedAfter;
         final String output;
 
-        Result(boolean root, String command, int exitCode, boolean timedOut,
+        Result(boolean accessible, String command, int exitCode, boolean timedOut,
                boolean userUnlockedBefore, boolean userUnlockedAfter, String output) {
-            this.root = root;
+            this.accessible = accessible;
+            this.rootfs = ROOTFS_PATH;
             this.command = command;
             this.exitCode = exitCode;
             this.timedOut = timedOut;
@@ -37,30 +43,34 @@ final class BfuRootProbe {
         }
 
         String summary() {
-            return "command=" + command
+            return "rootfs=" + rootfs
+                    + " command=" + command
                     + " exit=" + exitCode
                     + " timeout=" + timedOut
-                    + " root=" + root
+                    + " accessible=" + accessible
                     + " user_unlocked_before=" + userUnlockedBefore
                     + " user_unlocked_after=" + userUnlockedAfter
                     + " output=" + output;
         }
 
         boolean succeededDuringBfu() {
-            return root && !userUnlockedBefore && !userUnlockedAfter;
+            return accessible && !userUnlockedBefore && !userUnlockedAfter;
         }
     }
 
-    private BfuRootProbe() {}
+    private BfuRootfsProbe() {}
 
-    static Result run(Context context) throws IOException, InterruptedException {
+    static Result run(Context context, BfuRuntime.Layout layout)
+            throws IOException, InterruptedException {
         Context deContext = BfuPreferences.deviceProtectedContext(context);
         boolean userUnlockedBefore = isUserUnlocked(context);
-        BfuSu.Result commandResult = BfuSu.run("id", PROBE_TIMEOUT_MS);
+        String command = BfuSu.shellQuote(layout.rootfsProbeScript.getAbsolutePath())
+                + " " + BfuSu.shellQuote(ROOTFS_PATH);
+        BfuSu.Result commandResult = BfuSu.run(command, PROBE_TIMEOUT_MS);
         boolean userUnlockedAfter = isUserUnlocked(context);
-        boolean root = commandResult.exitedSuccessfully()
-                && containsRootUid(commandResult.output);
-        Result result = new Result(root, commandResult.command,
+        boolean accessible = commandResult.exitedSuccessfully()
+                && commandResult.output.contains(SUCCESS_MARKER);
+        Result result = new Result(accessible, commandResult.command,
                 commandResult.exitCode, commandResult.timedOut, userUnlockedBefore,
                 userUnlockedAfter, commandResult.output);
         appendPersistentResult(deContext, result);
@@ -69,7 +79,7 @@ final class BfuRootProbe {
 
     static String readLastPersistentResult(Context context) throws IOException {
         Context deContext = BfuPreferences.deviceProtectedContext(context);
-        File log = new File(deContext.getFilesDir(), "bfu-root.log");
+        File log = new File(deContext.getFilesDir(), "bfu-rootfs.log");
         if (!log.isFile()) return "";
 
         String lastLine = "";
@@ -83,10 +93,6 @@ final class BfuRootProbe {
         return lastLine;
     }
 
-    private static boolean containsRootUid(String output) {
-        return output.matches("(?s).*(^|\\s)uid=0(?:\\(|\\s|$).*");
-    }
-
     private static boolean isUserUnlocked(Context context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return true;
         UserManager userManager = (UserManager) context.getSystemService(Context.USER_SERVICE);
@@ -95,13 +101,12 @@ final class BfuRootProbe {
 
     private static void appendPersistentResult(Context deContext, Result result)
             throws IOException {
-        File log = new File(deContext.getFilesDir(), "bfu-root.log");
-        String line = "ROOT_PROBE " + System.currentTimeMillis() + " "
+        File log = new File(deContext.getFilesDir(), "bfu-rootfs.log");
+        String line = "ROOTFS_PROBE " + System.currentTimeMillis() + " "
                 + result.summary() + "\n";
         try (FileOutputStream output = new FileOutputStream(log, true)) {
             output.write(line.getBytes(StandardCharsets.UTF_8));
             output.getFD().sync();
         }
     }
-
 }

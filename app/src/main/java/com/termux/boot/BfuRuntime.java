@@ -6,6 +6,7 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
@@ -27,6 +28,7 @@ final class BfuRuntime {
         final File scripts;
         final File tmp;
         final File testScript;
+        final File rootfsProbeScript;
 
         Layout(File root) {
             this.root = root;
@@ -37,6 +39,7 @@ final class BfuRuntime {
             scripts = new File(root, "scripts");
             tmp = new File(root, "tmp");
             testScript = new File(scripts, "test.sh");
+            rootfsProbeScript = new File(scripts, "probe-rootfs.sh");
         }
     }
 
@@ -54,6 +57,7 @@ final class BfuRuntime {
         ensureDirectory(layout.tmp);
 
         writePrivateFile(layout.testScript, TEST_SCRIPT, true);
+        copyPrivateAsset(deContext, "bfu/probe-rootfs.sh", layout.rootfsProbeScript, true);
         return layout;
     }
 
@@ -96,6 +100,26 @@ final class BfuRuntime {
         File temporary = new File(file.getParentFile(), file.getName() + ".new");
         try (FileOutputStream output = new FileOutputStream(temporary, false)) {
             output.write(contents.getBytes(StandardCharsets.UTF_8));
+            output.getFD().sync();
+        }
+        setPrivateMode(temporary, executable);
+        if (file.exists() && !file.delete()) {
+            throw new IOException("Failed to replace " + file);
+        }
+        if (!temporary.renameTo(file)) {
+            throw new IOException("Failed to install " + file);
+        }
+        setPrivateMode(file, executable);
+    }
+
+    private static void copyPrivateAsset(Context context, String assetPath, File file,
+                                         boolean executable) throws IOException {
+        File temporary = new File(file.getParentFile(), file.getName() + ".new");
+        try (InputStream input = context.getAssets().open(assetPath);
+             FileOutputStream output = new FileOutputStream(temporary, false)) {
+            byte[] buffer = new byte[8_192];
+            int count;
+            while ((count = input.read(buffer)) >= 0) output.write(buffer, 0, count);
             output.getFD().sync();
         }
         setPrivateMode(temporary, executable);

@@ -19,6 +19,7 @@ public class BootActivity extends Activity {
     private CheckBox enableBfu;
     private CheckBox startNormalBoot;
     private TextView rootProbeStatus;
+    private TextView rootfsProbeStatus;
 
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
@@ -49,9 +50,12 @@ public class BootActivity extends Activity {
         rootProbeStatus = new TextView(this);
         content.addView(rootProbeStatus, matchWrap());
 
+        rootfsProbeStatus = new TextView(this);
+        content.addView(rootfsProbeStatus, matchWrap());
+
         Button refreshRootStatus = new Button(this);
-        refreshRootStatus.setText(R.string.bfu_refresh_root_status);
-        refreshRootStatus.setOnClickListener(view -> refreshRootProbeStatus());
+        refreshRootStatus.setText(R.string.bfu_refresh_probe_status);
+        refreshRootStatus.setOnClickListener(view -> refreshProbeStatus());
         content.addView(refreshRootStatus, matchWrap());
 
         Button save = new Button(this);
@@ -67,16 +71,25 @@ public class BootActivity extends Activity {
     private void loadSettings() {
         enableBfu.setChecked(BfuPreferences.isEnabled(this));
         startNormalBoot.setChecked(BfuPreferences.shouldStartNormalBoot(this));
-        refreshRootProbeStatus();
+        refreshProbeStatus();
     }
 
-    private void refreshRootProbeStatus() {
+    private void refreshProbeStatus() {
         try {
             String result = BfuRootProbe.readLastPersistentResult(this);
             if (result.isEmpty()) result = getString(R.string.bfu_root_probe_none);
             rootProbeStatus.setText(getString(R.string.bfu_root_probe_status, result));
         } catch (IOException e) {
             rootProbeStatus.setText(getString(R.string.bfu_root_probe_read_failed,
+                    e.getMessage()));
+        }
+
+        try {
+            String result = BfuRootfsProbe.readLastPersistentResult(this);
+            if (result.isEmpty()) result = getString(R.string.bfu_rootfs_probe_none);
+            rootfsProbeStatus.setText(getString(R.string.bfu_rootfs_probe_status, result));
+        } catch (IOException e) {
+            rootfsProbeStatus.setText(getString(R.string.bfu_rootfs_probe_read_failed,
                     e.getMessage()));
         }
     }
