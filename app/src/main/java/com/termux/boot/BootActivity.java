@@ -162,8 +162,11 @@ public class BootActivity extends Activity {
         installLog.setLineSpacing(0f, 1.15f);
         installLog.setMinLines(12);
         installLog.setMaxLines(22);
-        installLog.setVerticalScrollBarEnabled(true);
-        installLog.setScrollbarFadingEnabled(false);
+        // Some Android 16 vendor frameworks crash while drawing a forced,
+        // non-fading scrollbar before its ScrollBarDrawable is initialized.
+        // Text selection still supplies a scrolling movement method, so avoid
+        // the native scrollbar rendering path entirely.
+        installLog.setVerticalScrollBarEnabled(false);
         installLog.setTextIsSelectable(true);
         int logPadding = (int) (12 * getResources().getDisplayMetrics().density);
         installLog.setPadding(logPadding, logPadding, logPadding, logPadding);
