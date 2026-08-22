@@ -1,3 +1,19 @@
 <resources>
     <string name="app_name">Termux:Boot</string>
+    <string name="bfu_settings_title">Termux:Boot Direct Boot</string>
+    <string name="bfu_settings_explanation">BFU mode uses device-protected storage before the first unlock. Store public authorized keys only. Never place private keys, passwords, tokens, or other credentials here.</string>
+    <string name="bfu_enable">Enable Direct Boot / BFU mode</string>
+    <string name="bfu_ssh_port">SSH port (MVP default: 2222)</string>
+    <string name="bfu_authorized_keys">BFU authorized public keys</string>
+    <string name="bfu_authorized_keys_hint">ssh-ed25519 AAAA… bfu-only-key</string>
+    <string name="bfu_stop_after_unlock">Stop BFU service after first unlock</string>
+    <string name="bfu_start_normal_boot">Start normal Termux:Boot after unlock</string>
+    <string name="bfu_save_and_provision">Save and provision BFU runtime</string>
+    <string name="bfu_saved">BFU settings saved. Runtime: %1$s</string>
+    <string name="bfu_invalid_port">Enter an unprivileged port from 1024 to 65535.</string>
+    <string name="bfu_provision_failed">BFU provisioning failed: %1$s</string>
+    <string name="bfu_notification_channel">Termux BFU service</string>
+    <string name="bfu_notification_channel_description">Keeps the minimal Direct Boot environment running before first unlock.</string>
+    <string name="bfu_notification_title">Termux BFU environment</string>
+    <string name="bfu_notification_text">Direct Boot runtime active; planned SSH port %1$d</string>
 </resources>

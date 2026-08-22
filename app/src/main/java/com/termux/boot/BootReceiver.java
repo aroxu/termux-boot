@@ -7,7 +7,9 @@ import android.content.BroadcastReceiver;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.os.Build;
 import android.os.PersistableBundle;
+import android.os.UserManager;
 import android.util.Log;
 
 import java.io.File;
@@ -15,16 +17,84 @@ import java.util.Arrays;
 
 public class BootReceiver extends BroadcastReceiver {
 
+    private static final String TAG = "TermuxBFU";
+
     public static final int TERMUX_BOOT_JOB_ID_BASE = 1000;
     static int jobId = TERMUX_BOOT_JOB_ID_BASE;
 
     @Override
     public void onReceive(Context context, Intent intent) {
-        if (!Intent.ACTION_BOOT_COMPLETED.equals(intent.getAction())) return;
+        String action = intent == null ? null : intent.getAction();
+        if (Intent.ACTION_LOCKED_BOOT_COMPLETED.equals(action)) {
+            Log.i(TAG, "LOCKED_BOOT_COMPLETED received");
+            if (isUserUnlocked(context)) {
+                Log.i(TAG, "User is already unlocked; using normal Termux boot path");
+                startNormalTermuxBoot(context);
+            } else if (BfuPreferences.isEnabled(context)) {
+                startBfuEnvironment(context);
+            } else {
+                Log.i(TAG, "BFU mode is disabled");
+            }
+            return;
+        }
 
-        @SuppressLint("SdCardPath") final String BOOT_SCRIPT_PATH = "/data/data/com.termux/files/home/.termux/boot";
-        final File BOOT_SCRIPT_DIR = new File(BOOT_SCRIPT_PATH);
-        File[] files = BOOT_SCRIPT_DIR.listFiles();
+        if (Intent.ACTION_BOOT_COMPLETED.equals(action)) {
+            Log.i(TAG, "BOOT_COMPLETED received");
+            if (isUserUnlocked(context)) {
+                startNormalTermuxBoot(context);
+                if (BfuPreferences.shouldStopAfterUnlock(context)) {
+                    context.stopService(new Intent(context, BfuBootService.class));
+                }
+            } else if (BfuPreferences.isEnabled(context)) {
+                // Defensive fallback for devices that deliver broadcasts out of order.
+                startBfuEnvironment(context);
+            }
+        }
+    }
+
+    private static void startBfuEnvironment(Context context) {
+        Intent serviceIntent = new Intent(context, BfuBootService.class)
+                .setAction(BfuBootService.ACTION_START);
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(serviceIntent);
+            } else {
+                context.startService(serviceIntent);
+            }
+        } catch (RuntimeException e) {
+            Log.e(TAG, "Failed to start BFU service", e);
+        }
+    }
+
+    static void startNormalTermuxBoot(Context context) {
+        if (!isUserUnlocked(context)) {
+            Log.w(TAG, "Refusing to access Termux CE storage while user is locked");
+            return;
+        }
+        if (!BfuPreferences.shouldStartNormalBoot(context)) {
+            Log.i(TAG, "Normal Termux:Boot handoff is disabled");
+            return;
+        }
+        if (!BfuPreferences.tryMarkNormalBootDispatch(context)) {
+            Log.i(TAG, "Normal Termux:Boot handoff already dispatched recently");
+            return;
+        }
+
+        Log.i(TAG, "Termux Boot handoff started");
+        scheduleNormalBootScripts(context);
+    }
+
+    private static boolean isUserUnlocked(Context context) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return true;
+        UserManager userManager = (UserManager) context.getSystemService(Context.USER_SERVICE);
+        return userManager != null && userManager.isUserUnlocked();
+    }
+
+    private static void scheduleNormalBootScripts(Context context) {
+        @SuppressLint("SdCardPath") final String bootScriptPath =
+                "/data/data/com.termux/files/home/.termux/boot";
+        final File bootScriptDir = new File(bootScriptPath);
+        File[] files = bootScriptDir.listFiles();
         if (files == null) files = new File[0];
 
         // Sort files so that they get executed in a repeatable and logical order.
@@ -47,15 +117,17 @@ public class BootReceiver extends BroadcastReceiver {
                     .setExtras(extras)
                     .setOverrideDeadline(3 * 1000)
                     .build();
-            JobScheduler jobScheduler = (JobScheduler) context.getSystemService(Context.JOB_SCHEDULER_SERVICE);
-            assert jobScheduler != null;
-            jobScheduler.schedule(job);
+            JobScheduler jobScheduler =
+                    (JobScheduler) context.getSystemService(Context.JOB_SCHEDULER_SERVICE);
+            if (jobScheduler == null || jobScheduler.schedule(job) != JobScheduler.RESULT_SUCCESS) {
+                Log.e(TAG, "Failed to schedule normal boot script: " + file.getName());
+            }
         }
 
         if (logMessage.length() > 0) {
-            Log.i("termux", "Executed files at boot: " + logMessage);
+            Log.i(TAG, "Scheduled normal boot files: " + logMessage);
         } else {
-            Log.i("termux", "No files to execute at boot");
+            Log.i(TAG, "No normal Termux boot files to execute");
         }
     }
 
