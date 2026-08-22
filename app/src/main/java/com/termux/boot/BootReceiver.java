@@ -30,27 +30,23 @@ public class BootReceiver extends BroadcastReceiver {
         if (Intent.ACTION_LOCKED_BOOT_COMPLETED.equals(action)) {
             Log.i(TAG, "LOCKED_BOOT_COMPLETED received");
             appendLockedBootMarker(context);
-            if (isUserUnlocked(context)) {
-                Log.i(TAG, "User is already unlocked; using normal Termux boot path");
-                startNormalTermuxBoot(context);
-            } else if (BfuPreferences.isEnabled(context)) {
+            if (BfuPreferences.isEnabled(context)) {
                 startBfuEnvironment(context);
             } else {
                 Log.i(TAG, "BFU mode is disabled");
+            }
+            if (isUserUnlocked(context)) {
+                Log.i(TAG, "User is already unlocked; also using normal Termux boot path");
+                startNormalTermuxBoot(context);
             }
             return;
         }
 
         if (Intent.ACTION_BOOT_COMPLETED.equals(action)) {
             Log.i(TAG, "BOOT_COMPLETED received");
+            if (BfuPreferences.isEnabled(context)) startBfuEnvironment(context);
             if (isUserUnlocked(context)) {
                 startNormalTermuxBoot(context);
-                if (BfuPreferences.shouldStopAfterUnlock(context)) {
-                    context.stopService(new Intent(context, BfuBootService.class));
-                }
-            } else if (BfuPreferences.isEnabled(context)) {
-                // Defensive fallback for devices that deliver broadcasts out of order.
-                startBfuEnvironment(context);
             }
         }
     }

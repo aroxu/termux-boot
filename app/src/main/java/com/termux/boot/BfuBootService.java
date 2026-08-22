@@ -28,7 +28,7 @@ public class BfuBootService extends Service {
     private static final int NOTIFICATION_ID = 2222;
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
-    private final AtomicBoolean probeStarted = new AtomicBoolean(false);
+    private final AtomicBoolean startupChecksStarted = new AtomicBoolean(false);
 
     private final BroadcastReceiver userUnlockedReceiver = new BroadcastReceiver() {
         @Override
@@ -50,19 +50,16 @@ public class BfuBootService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        if (isUserUnlocked()) {
-            handOffAfterUnlock();
-            return START_NOT_STICKY;
-        }
-
         if (!BfuPreferences.isEnabled(this)) {
             Log.i(TAG, "BFU service stopped because BFU mode is disabled");
             stopSelf();
             return START_NOT_STICKY;
         }
 
-        if (probeStarted.compareAndSet(false, true)) {
-            executor.execute(this::provisionAndProbeRuntime);
+        if (isUserUnlocked()) handOffAfterUnlock();
+
+        if (startupChecksStarted.compareAndSet(false, true)) {
+            executor.execute(this::runBfuStartupChecks);
         }
         return START_STICKY;
     }
@@ -83,7 +80,7 @@ public class BfuBootService extends Service {
         return null;
     }
 
-    private void provisionAndProbeRuntime() {
+    private void runBfuStartupChecks() {
         try {
             Context deContext = BfuPreferences.deviceProtectedContext(this);
             Log.i(TAG, "DE context initialized: " + deContext.getFilesDir());
@@ -96,6 +93,21 @@ public class BfuBootService extends Service {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             Log.w(TAG, "BFU executable probe interrupted");
+            return;
+        }
+
+        try {
+            BfuRootProbe.Result result = BfuRootProbe.run(this);
+            if (result.root) {
+                Log.i(TAG, "root probe: uid=0; " + result.summary());
+            } else {
+                Log.w(TAG, "root probe failed; " + result.summary());
+            }
+        } catch (IOException e) {
+            Log.e(TAG, "Root probe or DE root log write failed", e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            Log.w(TAG, "Root probe interrupted");
         }
     }
 
@@ -105,10 +117,7 @@ public class BfuBootService extends Service {
             return;
         }
         BootReceiver.startNormalTermuxBoot(this);
-        if (BfuPreferences.shouldStopAfterUnlock(this)) {
-            Log.i(TAG, "BFU daemon stopped");
-            stopSelf();
-        }
+        Log.i(TAG, "BFU service remains active after USER_UNLOCKED");
     }
 
     private boolean isUserUnlocked() {
@@ -152,8 +161,7 @@ public class BfuBootService extends Service {
         return builder
                 .setSmallIcon(R.drawable.ic_launcher)
                 .setContentTitle(getString(R.string.bfu_notification_title))
-                .setContentText(getString(R.string.bfu_notification_text,
-                        BfuPreferences.getSshPort(this)))
+                .setContentText(getString(R.string.bfu_notification_text))
                 .setContentIntent(pendingIntent)
                 .setOngoing(true)
                 .build();

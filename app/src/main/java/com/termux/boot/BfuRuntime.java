@@ -54,9 +54,6 @@ final class BfuRuntime {
         ensureDirectory(layout.tmp);
 
         writePrivateFile(layout.testScript, TEST_SCRIPT, true);
-        String authorizedKeys = BfuPreferences.getAuthorizedKeys(context);
-        if (!authorizedKeys.isEmpty()) authorizedKeys += "\n";
-        writePrivateFile(new File(layout.etc, "authorized_keys"), authorizedKeys, false);
         return layout;
     }
 
