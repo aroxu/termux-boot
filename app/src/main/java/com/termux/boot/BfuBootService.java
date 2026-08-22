@@ -24,6 +24,14 @@ public class BfuBootService extends Service {
     static final String ACTION_START = "com.termux.boot.action.START_BFU";
     static final String ACTION_INSTALL_DEBIAN =
             "com.termux.boot.action.INSTALL_DEBIAN_ROOTFS";
+    static final String ACTION_CONFIGURE_DEBIAN =
+            "com.termux.boot.action.CONFIGURE_DEBIAN_SYSTEM";
+    static final String ACTION_DEBIAN_START =
+            "com.termux.boot.action.START_DEBIAN_SYSTEMD";
+    static final String ACTION_DEBIAN_STATUS =
+            "com.termux.boot.action.STATUS_DEBIAN_SYSTEMD";
+    static final String ACTION_DEBIAN_STOP =
+            "com.termux.boot.action.STOP_DEBIAN_SYSTEMD";
 
     private static final String TAG = "TermuxBFU";
     private static final String NOTIFICATION_CHANNEL_ID = "termux_bfu";
@@ -32,6 +40,8 @@ public class BfuBootService extends Service {
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final AtomicBoolean startupChecksStarted = new AtomicBoolean(false);
     private final AtomicBoolean rootfsInstallStarted = new AtomicBoolean(false);
+    private final AtomicBoolean systemConfigurationStarted = new AtomicBoolean(false);
+    private final AtomicBoolean lifecycleOperationStarted = new AtomicBoolean(false);
 
     private final BroadcastReceiver userUnlockedReceiver = new BroadcastReceiver() {
         @Override
@@ -53,20 +63,24 @@ public class BfuBootService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        if (!BfuPreferences.isEnabled(this)) {
+        String action = intent == null ? ACTION_START : intent.getAction();
+        boolean disabledControlAllowed = ACTION_DEBIAN_STATUS.equals(action)
+                || ACTION_DEBIAN_STOP.equals(action);
+        if (!BfuPreferences.isEnabled(this) && !disabledControlAllowed) {
             Log.i(TAG, "BFU service stopped because BFU mode is disabled");
             stopSelf();
             return START_NOT_STICKY;
         }
 
         boolean userUnlocked = isUserUnlocked();
-        if (userUnlocked) handOffAfterUnlock();
+        if (userUnlocked && ACTION_START.equals(action)) handOffAfterUnlock();
 
-        if (startupChecksStarted.compareAndSet(false, true)) {
+        if (ACTION_START.equals(action)
+                && startupChecksStarted.compareAndSet(false, true)) {
             executor.execute(this::runBfuStartupChecks);
         }
 
-        if (intent != null && ACTION_INSTALL_DEBIAN.equals(intent.getAction())) {
+        if (ACTION_INSTALL_DEBIAN.equals(action)) {
             if (!userUnlocked) {
                 Log.w(TAG, "Debian rootfs install rejected while CE is locked");
                 DebianRootfsInstaller.recordRejected(this,
@@ -79,6 +93,21 @@ public class BfuBootService extends Service {
                 DebianRootfsInstaller.recordMessage(this,
                         "REQUEST_IGNORED: a Debian rootfs installation is already running");
             }
+        } else if (ACTION_CONFIGURE_DEBIAN.equals(action)) {
+            if (!userUnlocked) {
+                Log.w(TAG, "Debian system configuration rejected while CE is locked");
+                DebianSystemProvisioner.recordRejected(this,
+                        "unlock Android before configuring Debian systemd and SSH");
+            } else if (systemConfigurationStarted.compareAndSet(false, true)) {
+                DebianSystemProvisioner.recordQueued(this);
+                executor.execute(this::runDebianSystemConfiguration);
+            } else {
+                DebianSystemProvisioner.recordMessage(this,
+                        "REQUEST_IGNORED: Debian system configuration is already running");
+            }
+        } else {
+            DebianLauncher.Operation operation = lifecycleOperation(action);
+            if (operation != null) requestLifecycleOperation(operation, "app_button");
         }
         return START_STICKY;
     }
@@ -100,8 +129,33 @@ public class BfuBootService extends Service {
     }
 
     static void requestDebianRootfsInstall(Context context) {
-        Intent intent = new Intent(context, BfuBootService.class)
-                .setAction(ACTION_INSTALL_DEBIAN);
+        startServiceAction(context, ACTION_INSTALL_DEBIAN);
+    }
+
+    static void requestDebianSystemConfiguration(Context context) {
+        startServiceAction(context, ACTION_CONFIGURE_DEBIAN);
+    }
+
+    static void requestDebianLifecycle(Context context, DebianLauncher.Operation operation) {
+        String action;
+        switch (operation) {
+            case START:
+                action = ACTION_DEBIAN_START;
+                break;
+            case STATUS:
+                action = ACTION_DEBIAN_STATUS;
+                break;
+            case STOP:
+                action = ACTION_DEBIAN_STOP;
+                break;
+            default:
+                throw new IllegalArgumentException("Unsupported lifecycle operation");
+        }
+        startServiceAction(context, action);
+    }
+
+    private static void startServiceAction(Context context, String action) {
+        Intent intent = new Intent(context, BfuBootService.class).setAction(action);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             context.startForegroundService(intent);
         } else {
@@ -156,6 +210,8 @@ public class BfuBootService extends Service {
             if (runtimeResult.succeededDuringBfu()) {
                 Log.i(TAG, "Debian namespace/chroot probe succeeded; "
                         + runtimeResult.summary());
+                runDebianLifecycleNow(layout, DebianLauncher.Operation.START,
+                        "locked_boot");
             } else {
                 Log.w(TAG, "Debian namespace/chroot probe failed; "
                         + runtimeResult.summary());
@@ -179,6 +235,76 @@ public class BfuBootService extends Service {
         } finally {
             rootfsInstallStarted.set(false);
         }
+    }
+
+    private void runDebianSystemConfiguration() {
+        BfuRuntime.Layout layout = null;
+        try {
+            layout = BfuRuntime.provision(this);
+            // Reconfiguration must never mutate packages below a live PID 1.
+            if (!runDebianLifecycleNow(layout, DebianLauncher.Operation.STOP,
+                    "AFU_reconfiguration")) {
+                DebianSystemProvisioner.recordRejected(this,
+                        "could not prove that the current Debian PID 1 stopped");
+                return;
+            }
+            if (DebianSystemProvisioner.configure(this, layout)) {
+                runDebianLifecycleNow(layout, DebianLauncher.Operation.START,
+                        "AFU_configuration_completed");
+            }
+        } catch (IOException | IllegalStateException e) {
+            Log.e(TAG, "Could not provision the Debian system configurator", e);
+            DebianSystemProvisioner.recordRejected(this,
+                    "configuration provisioning failed: "
+                            + BfuSu.sanitize(e.getMessage()));
+        } finally {
+            systemConfigurationStarted.set(false);
+        }
+    }
+
+    private void requestLifecycleOperation(DebianLauncher.Operation operation,
+                                           String trigger) {
+        if (!lifecycleOperationStarted.compareAndSet(false, true)) {
+            Log.i(TAG, "Debian lifecycle operation already queued or running");
+            return;
+        }
+        executor.execute(() -> {
+            BfuRuntime.Layout layout = null;
+            try {
+                layout = BfuRuntime.provision(this);
+                runDebianLifecycleNow(layout, operation, trigger);
+            } catch (IOException | IllegalStateException e) {
+                Log.e(TAG, "Could not provision Debian lifecycle runtime", e);
+                DebianLauncher.recordFailure(this, layout, operation, e.getMessage());
+            } finally {
+                lifecycleOperationStarted.set(false);
+                if (!BfuPreferences.isEnabled(this)) stopSelf();
+            }
+        });
+    }
+
+    private boolean runDebianLifecycleNow(BfuRuntime.Layout layout,
+                                          DebianLauncher.Operation operation,
+                                          String trigger) {
+        try {
+            return DebianLauncher.run(this, layout, operation, trigger);
+        } catch (IOException e) {
+            Log.e(TAG, "Debian lifecycle I/O failed: " + operation, e);
+            DebianLauncher.recordFailure(this, layout, operation, e.getMessage());
+            return false;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            Log.w(TAG, "Debian lifecycle interrupted: " + operation);
+            DebianLauncher.recordFailure(this, layout, operation, "interrupted");
+            return false;
+        }
+    }
+
+    private static DebianLauncher.Operation lifecycleOperation(String action) {
+        if (ACTION_DEBIAN_START.equals(action)) return DebianLauncher.Operation.START;
+        if (ACTION_DEBIAN_STATUS.equals(action)) return DebianLauncher.Operation.STATUS;
+        if (ACTION_DEBIAN_STOP.equals(action)) return DebianLauncher.Operation.STOP;
+        return null;
     }
 
     private void handOffAfterUnlock() {

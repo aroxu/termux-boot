@@ -17,7 +17,7 @@ import java.util.Map;
 final class BfuRuntime {
 
     private static final String NAMESPACE_PROBE_SHA256 =
-            "bcec89cb70ee9b3847260788e04548e497d830e8a56388b07c275606a7dc5ea8";
+            "d987326ee094fd073e45c50b2e26213fb2356c3e17b06ff300e7809c94c7686a";
 
     private static final String TEST_SCRIPT =
             "#!/system/bin/sh\n" +
@@ -34,10 +34,13 @@ final class BfuRuntime {
         final File scripts;
         final File tmp;
         final File downloads;
+        final File authorizedKeys;
         final File testScript;
         final File rootfsProbeScript;
         final File namespaceProbeBinary;
         final File rootfsInstallerScript;
+        final File systemdConfiguratorScript;
+        final File lifecycleLog;
         final File debootstrapArchive;
         final File archiveKeyringPackage;
 
@@ -50,10 +53,14 @@ final class BfuRuntime {
             scripts = new File(root, "scripts");
             tmp = new File(root, "tmp");
             downloads = new File(root, "downloads");
+            authorizedKeys = new File(etc, "authorized_keys");
             testScript = new File(scripts, "test.sh");
             rootfsProbeScript = new File(scripts, "probe-rootfs.sh");
             namespaceProbeBinary = new File(bin, "bfu-namespace-probe-arm64");
             rootfsInstallerScript = new File(scripts, "install-debian-rootfs.sh");
+            systemdConfiguratorScript = new File(scripts,
+                    "configure-debian-systemd.sh");
+            lifecycleLog = new File(run, "debian-lifecycle.log");
             debootstrapArchive = new File(downloads, "debootstrap_1.0.141.tar.gz");
             archiveKeyringPackage = new File(downloads,
                     "debian-archive-keyring_2025.1_all.deb");
@@ -62,9 +69,14 @@ final class BfuRuntime {
 
     private BfuRuntime() {}
 
+    static Layout layout(Context context) {
+        Context deContext = BfuPreferences.deviceProtectedContext(context);
+        return new Layout(new File(deContext.getFilesDir(), "bfu"));
+    }
+
     static Layout provision(Context context) throws IOException {
         Context deContext = BfuPreferences.deviceProtectedContext(context);
-        Layout layout = new Layout(new File(deContext.getFilesDir(), "bfu"));
+        Layout layout = layout(deContext);
         ensureDirectory(layout.root);
         ensureDirectory(layout.bin);
         ensureDirectory(layout.etc);
@@ -82,6 +94,9 @@ final class BfuRuntime {
         verifySha256(layout.namespaceProbeBinary, NAMESPACE_PROBE_SHA256);
         copyPrivateAsset(deContext, "bfu/install-debian-rootfs.sh",
                 layout.rootfsInstallerScript, true);
+        copyPrivateAsset(deContext, "bfu/configure-debian-systemd.sh",
+                layout.systemdConfiguratorScript, true);
+        ensurePrivateFile(layout.lifecycleLog);
         return layout;
     }
 
@@ -113,10 +128,11 @@ final class BfuRuntime {
     }
 
     private static void ensureDirectory(File directory) throws IOException {
-        if (directory.isDirectory()) return;
-        if (!directory.mkdirs() && !directory.isDirectory()) {
+        if (!directory.isDirectory()
+                && !directory.mkdirs() && !directory.isDirectory()) {
             throw new IOException("Failed to create directory " + directory);
         }
+        setPrivateMode(directory, true);
     }
 
     private static void writePrivateFile(File file, String contents, boolean executable)
@@ -134,6 +150,16 @@ final class BfuRuntime {
             throw new IOException("Failed to install " + file);
         }
         setPrivateMode(file, executable);
+    }
+
+    private static void ensurePrivateFile(File file) throws IOException {
+        if (!file.exists()) {
+            try (FileOutputStream output = new FileOutputStream(file, false)) {
+                output.getFD().sync();
+            }
+        }
+        if (!file.isFile()) throw new IOException("Expected a regular file: " + file);
+        setPrivateMode(file, false);
     }
 
     private static void copyPrivateAsset(Context context, String assetPath, File file,

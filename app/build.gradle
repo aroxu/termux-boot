@@ -66,7 +66,7 @@ task versionName {
 def bfuNamespaceProbeAsset = file(
         'src/main/assets/bfu/bin/bfu-namespace-probe-arm64')
 def bfuNamespaceProbeSha256 =
-        'bcec89cb70ee9b3847260788e04548e497d830e8a56388b07c275606a7dc5ea8'
+        'd987326ee094fd073e45c50b2e26213fb2356c3e17b06ff300e7809c94c7686a'
 
 tasks.register('verifyBfuNamespaceProbe') {
     inputs.file(bfuNamespaceProbeAsset)

@@ -14,12 +14,14 @@ import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.text.TextUtils;
+import android.text.InputType;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.CheckBox;
+import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -38,6 +40,7 @@ public class BootActivity extends Activity {
 
     private CheckBox enableBfu;
     private CheckBox startNormalBoot;
+    private EditText authorizedKeys;
     private TextView rootProbeStatus;
     private TextView rootfsProbeStatus;
     private TextView debianRuntimeProbeStatus;
@@ -46,6 +49,10 @@ public class BootActivity extends Activity {
     private TextView operationLog;
     private TextView installStatus;
     private TextView installLog;
+    private TextView systemConfigStatus;
+    private TextView systemConfigLog;
+    private TextView lifecycleStatus;
+    private TextView lifecycleLog;
     private Handler liveLogHandler;
     private final ExecutorService rootAuthorizationExecutor =
             Executors.newSingleThreadExecutor();
@@ -55,6 +62,8 @@ public class BootActivity extends Activity {
     private String pendingRootAuthorizationFailure;
     private String lastDisplayedOperationLog = "";
     private String lastDisplayedInstallLog = "";
+    private String lastDisplayedSystemConfigLog = "";
+    private String lastDisplayedLifecycleLog = "";
 
     private final Runnable refreshLiveLog = new Runnable() {
         @Override
@@ -62,6 +71,8 @@ public class BootActivity extends Activity {
             refreshRootAuthorizationStatus();
             refreshOperationLog();
             refreshInstallerStatus();
+            refreshSystemConfigurationStatus();
+            refreshLifecycleStatus();
             liveLogHandler.postDelayed(this, 1_000L);
         }
     };
@@ -114,6 +125,17 @@ public class BootActivity extends Activity {
         startNormalBoot = new CheckBox(this);
         startNormalBoot.setText(R.string.bfu_start_normal_boot);
         content.addView(startNormalBoot, matchWrap());
+
+        TextView authorizedKeysExplanation = new TextView(this);
+        authorizedKeysExplanation.setText(R.string.bfu_authorized_keys_explanation);
+        content.addView(authorizedKeysExplanation, matchWrap());
+
+        authorizedKeys = createAuthorizedKeysEditor();
+        LinearLayout.LayoutParams keysLayout = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        keysLayout.topMargin = dp(8);
+        keysLayout.bottomMargin = dp(16);
+        content.addView(authorizedKeys, keysLayout);
 
         TextView rootAuthorizationExplanation = new TextView(this);
         rootAuthorizationExplanation.setText(R.string.bfu_root_authorization_explanation);
@@ -184,6 +206,68 @@ public class BootActivity extends Activity {
         installLog = createLogConsole(12, 22);
         addLogConsole(content, installLog, padding);
 
+        TextView systemConfigExplanation = new TextView(this);
+        systemConfigExplanation.setText(R.string.bfu_system_config_explanation);
+        content.addView(systemConfigExplanation, matchWrap());
+
+        Button configureSystem = new Button(this);
+        configureSystem.setText(R.string.bfu_configure_system);
+        configureSystem.setOnClickListener(view -> confirmSystemConfiguration());
+        content.addView(configureSystem, matchWrap());
+
+        systemConfigStatus = createLogConsole(3, 7);
+        addLogConsole(content, systemConfigStatus, dp(12));
+
+        TextView systemConfigLogTitle = new TextView(this);
+        systemConfigLogTitle.setText(R.string.bfu_system_config_log_title);
+        systemConfigLogTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        content.addView(systemConfigLogTitle, matchWrap());
+
+        TextView systemConfigLogHint = new TextView(this);
+        systemConfigLogHint.setText(R.string.bfu_log_console_hint);
+        systemConfigLogHint.setTextSize(12f);
+        content.addView(systemConfigLogHint, matchWrap());
+
+        systemConfigLog = createLogConsole(12, 22);
+        addLogConsole(content, systemConfigLog, padding);
+
+        TextView lifecycleExplanation = new TextView(this);
+        lifecycleExplanation.setText(R.string.bfu_lifecycle_explanation);
+        content.addView(lifecycleExplanation, matchWrap());
+
+        Button startDebian = new Button(this);
+        startDebian.setText(R.string.bfu_start_debian);
+        startDebian.setOnClickListener(view -> requestLifecycle(
+                DebianLauncher.Operation.START));
+        content.addView(startDebian, matchWrap());
+
+        Button statusDebian = new Button(this);
+        statusDebian.setText(R.string.bfu_status_debian);
+        statusDebian.setOnClickListener(view -> requestLifecycle(
+                DebianLauncher.Operation.STATUS));
+        content.addView(statusDebian, matchWrap());
+
+        Button stopDebian = new Button(this);
+        stopDebian.setText(R.string.bfu_stop_debian);
+        stopDebian.setOnClickListener(view -> confirmStopDebian());
+        content.addView(stopDebian, matchWrap());
+
+        lifecycleStatus = createLogConsole(3, 8);
+        addLogConsole(content, lifecycleStatus, dp(12));
+
+        TextView lifecycleLogTitle = new TextView(this);
+        lifecycleLogTitle.setText(R.string.bfu_lifecycle_log_title);
+        lifecycleLogTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        content.addView(lifecycleLogTitle, matchWrap());
+
+        TextView lifecycleLogHint = new TextView(this);
+        lifecycleLogHint.setText(R.string.bfu_log_console_hint);
+        lifecycleLogHint.setTextSize(12f);
+        content.addView(lifecycleLogHint, matchWrap());
+
+        lifecycleLog = createLogConsole(12, 24);
+        addLogConsole(content, lifecycleLog, padding);
+
         ScrollView scrollView = new ScrollView(this);
         scrollView.setFillViewport(true);
         scrollView.setSmoothScrollingEnabled(true);
@@ -197,10 +281,18 @@ public class BootActivity extends Activity {
     private void loadSettings() {
         enableBfu.setChecked(BfuPreferences.isEnabled(this));
         startNormalBoot.setChecked(BfuPreferences.shouldStartNormalBoot(this));
+        try {
+            authorizedKeys.setText(BfuAuthorizedKeys.read(BfuRuntime.layout(this)));
+        } catch (IOException e) {
+            authorizedKeys.setError(getString(
+                    R.string.bfu_authorized_keys_read_failed, e.getMessage()));
+        }
         refreshRootAuthorizationStatus();
         refreshProbeStatus(false);
         refreshOperationLog();
         refreshInstallerStatus();
+        refreshSystemConfigurationStatus();
+        refreshLifecycleStatus();
     }
 
     private void refreshProbeStatus(boolean recordOperation) {
@@ -253,7 +345,13 @@ public class BootActivity extends Activity {
         try {
             BfuPreferences.save(this, enableBfu.isChecked(), startNormalBoot.isChecked());
             BfuRuntime.Layout layout = BfuRuntime.provision(this);
-            recordOperation("PROVISION_SUCCEEDED runtime=" + layout.root);
+            int keyCount = 0;
+            if (!authorizedKeys.getText().toString().trim().isEmpty()) {
+                keyCount = BfuAuthorizedKeys.validateAndSave(
+                        layout, authorizedKeys.getText().toString());
+            }
+            recordOperation("PROVISION_SUCCEEDED runtime=" + layout.root
+                    + " authorized_key_count=" + keyCount);
             Toast.makeText(this, getString(R.string.bfu_saved, layout.root),
                     Toast.LENGTH_LONG).show();
         } catch (IOException | IllegalStateException e) {
@@ -422,6 +520,141 @@ public class BootActivity extends Activity {
         }
     }
 
+    private void confirmSystemConfiguration() {
+        if (!enableBfu.isChecked()) {
+            recordOperation("DEBIAN_CONFIG_REJECTED bfu_disabled=true");
+            Toast.makeText(this, R.string.bfu_install_requires_enabled,
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (!isUserUnlocked()) {
+            recordOperation("DEBIAN_CONFIG_REJECTED user_locked=true");
+            Toast.makeText(this, R.string.bfu_system_config_requires_unlock,
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.bfu_system_config_confirm_title)
+                .setMessage(R.string.bfu_system_config_confirm_message)
+                .setNegativeButton(android.R.string.cancel, null)
+                .setPositiveButton(R.string.bfu_system_config_confirm_button,
+                        (dialog, which) -> startSystemConfiguration())
+                .show();
+    }
+
+    private void startSystemConfiguration() {
+        try {
+            BfuPreferences.save(this, enableBfu.isChecked(), startNormalBoot.isChecked());
+            BfuRuntime.Layout layout = BfuRuntime.provision(this);
+            int keyCount = BfuAuthorizedKeys.validateAndSave(
+                    layout, authorizedKeys.getText().toString());
+            BfuBootService.requestDebianSystemConfiguration(this);
+            recordOperation("DEBIAN_CONFIG_REQUESTED suite=trixie ssh_user=debian"
+                    + " ssh_port=22 authorized_key_count=" + keyCount);
+            Toast.makeText(this, R.string.bfu_system_config_requested,
+                    Toast.LENGTH_LONG).show();
+            refreshSystemConfigurationStatus();
+        } catch (IOException | IllegalStateException e) {
+            recordOperation("DEBIAN_CONFIG_REQUEST_FAILED "
+                    + BfuSu.sanitize(e.getMessage()));
+            Toast.makeText(this, getString(
+                    R.string.bfu_system_config_request_failed, e.getMessage()),
+                    Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void requestLifecycle(DebianLauncher.Operation operation) {
+        if (operation == DebianLauncher.Operation.START && !enableBfu.isChecked()) {
+            recordOperation("DEBIAN_LIFECYCLE_REJECTED operation=start bfu_disabled=true");
+            Toast.makeText(this, R.string.bfu_install_requires_enabled,
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        try {
+            BfuPreferences.save(this, enableBfu.isChecked(), startNormalBoot.isChecked());
+            BfuRuntime.provision(this);
+            BfuBootService.requestDebianLifecycle(this, operation);
+            recordOperation("DEBIAN_LIFECYCLE_REQUESTED operation="
+                    + operation.name().toLowerCase(java.util.Locale.US));
+            Toast.makeText(this, getString(R.string.bfu_lifecycle_requested,
+                    operation.name()), Toast.LENGTH_SHORT).show();
+            refreshLifecycleStatus();
+        } catch (IOException | IllegalStateException e) {
+            recordOperation("DEBIAN_LIFECYCLE_REQUEST_FAILED operation="
+                    + operation.name() + " " + BfuSu.sanitize(e.getMessage()));
+            Toast.makeText(this, getString(
+                    R.string.bfu_lifecycle_request_failed, e.getMessage()),
+                    Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void confirmStopDebian() {
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.bfu_stop_confirm_title)
+                .setMessage(R.string.bfu_stop_confirm_message)
+                .setNegativeButton(android.R.string.cancel, null)
+                .setPositiveButton(R.string.bfu_stop_confirm_button,
+                        (dialog, which) -> requestLifecycle(
+                                DebianLauncher.Operation.STOP))
+                .show();
+    }
+
+    private void refreshSystemConfigurationStatus() {
+        if (systemConfigStatus == null || systemConfigLog == null) return;
+        try {
+            String status = DebianSystemProvisioner.readStatus(this);
+            if (status.isEmpty()) status = getString(R.string.bfu_system_config_status_none);
+            replaceConsoleText(systemConfigStatus,
+                    getString(R.string.bfu_system_config_status, status), true);
+        } catch (IOException e) {
+            replaceConsoleText(systemConfigStatus, getString(
+                    R.string.bfu_system_config_status_failed, e.getMessage()), true);
+        }
+        try {
+            String log = DebianSystemProvisioner.readLogTail(this);
+            if (log.isEmpty()) log = getString(R.string.bfu_system_config_log_none);
+            if (!log.equals(lastDisplayedSystemConfigLog)) {
+                if (hasConsoleSelection(systemConfigLog)
+                        || !isConsoleAtBottom(systemConfigLog,
+                        lastDisplayedSystemConfigLog)) return;
+                lastDisplayedSystemConfigLog = log;
+                systemConfigLog.setText(log);
+                scrollConsoleToBottom(systemConfigLog);
+            }
+        } catch (IOException e) {
+            replaceConsoleText(systemConfigLog, getString(
+                    R.string.bfu_system_config_log_failed, e.getMessage()), true);
+        }
+    }
+
+    private void refreshLifecycleStatus() {
+        if (lifecycleStatus == null || lifecycleLog == null) return;
+        try {
+            String status = DebianLauncher.readStatus(this);
+            if (status.isEmpty()) status = getString(R.string.bfu_lifecycle_status_none);
+            replaceConsoleText(lifecycleStatus,
+                    getString(R.string.bfu_lifecycle_status, status), true);
+        } catch (IOException e) {
+            replaceConsoleText(lifecycleStatus, getString(
+                    R.string.bfu_lifecycle_status_failed, e.getMessage()), true);
+        }
+        try {
+            String log = DebianLauncher.readLogTail(this);
+            if (log.isEmpty()) log = getString(R.string.bfu_lifecycle_log_none);
+            if (!log.equals(lastDisplayedLifecycleLog)) {
+                if (hasConsoleSelection(lifecycleLog)
+                        || !isConsoleAtBottom(lifecycleLog,
+                        lastDisplayedLifecycleLog)) return;
+                lastDisplayedLifecycleLog = log;
+                lifecycleLog.setText(log);
+                scrollConsoleToBottom(lifecycleLog);
+            }
+        } catch (IOException e) {
+            replaceConsoleText(lifecycleLog, getString(
+                    R.string.bfu_lifecycle_log_failed, e.getMessage()), true);
+        }
+    }
+
     private void refreshInstallerStatus() {
         if (installStatus == null || installLog == null) return;
 
@@ -520,6 +753,32 @@ public class BootActivity extends Activity {
     private static String oneLine(String value) {
         if (value == null) return "(null)";
         return value.replace('\r', ' ').replace('\n', ' ').trim();
+    }
+
+    private EditText createAuthorizedKeysEditor() {
+        EditText editor = new EditText(this);
+        editor.setHint(R.string.bfu_authorized_keys_hint);
+        editor.setInputType(InputType.TYPE_CLASS_TEXT
+                | InputType.TYPE_TEXT_FLAG_MULTI_LINE
+                | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        editor.setSingleLine(false);
+        editor.setMinLines(4);
+        editor.setMaxLines(10);
+        editor.setGravity(Gravity.TOP | Gravity.START);
+        editor.setTypeface(Typeface.MONOSPACE);
+        editor.setTextSize(12f);
+        editor.setTextColor(Color.rgb(222, 231, 240));
+        editor.setHintTextColor(Color.rgb(126, 143, 158));
+        editor.setHorizontallyScrolling(false);
+        editor.setVerticalScrollBarEnabled(false);
+        editor.setPadding(dp(12), dp(12), dp(12), dp(12));
+
+        GradientDrawable background = new GradientDrawable();
+        background.setColor(Color.rgb(13, 18, 23));
+        background.setCornerRadius(dp(10));
+        background.setStroke(Math.max(1, dp(1)), Color.rgb(70, 112, 148));
+        editor.setBackground(background);
+        return editor;
     }
 
     private TextView createLogConsole(int minimumLines, int maximumLines) {
